@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 8 — Self-host LLM: GPU, KV cache &amp; batching</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">LLM Foundation · Bài 0008 · 2026-09-26 · ~30 phút · <a href="../reference/self-host-inference.html">Cheat sheet: Self-host inference</a> · <a href="0007-context-engineering-va-prompt-caching.html">Bài 7</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Self-host LLM: GPU, KV cache &amp; batching</h1>
+<p class="subtitle">Với API, anh trả tiền theo token. Tự host thì anh trả tiền theo giờ GPU, và mọi quyết định còn lại quy về một câu hỏi: <em>sau khi nạp weights, GPU còn bao nhiêu bộ nhớ cho KV cache</em>. Phần còn lại đó quyết định chạy được bao nhiêu request cùng lúc, và vì thế quyết định giá mỗi token.</p>
+
+<div class="callout">
+  <span class="label">Cái anh mang về sau bài này</span>
+  <p>Chỉ cần giấy và bút là ước lượng được model X có chạy nổi trên GPU Y không, và chạy được bao nhiêu request đồng thời. Giải thích được vì sao TTFT và tốc độ sinh token bị giới hạn bởi hai thứ khác nhau. Biết cần theo dõi metric nào của vLLM, HPA nên scale theo tín hiệu gì, và lúc nào self-host thật sự thắng API.</p>
+</div>
+
+<h2>0. Ôn giãn cách — làm trước khi đọc</h2>
+
+<p>Câu đầu là câu tự diễn đạt: <strong>viết ra 2–3 câu trước</strong>, rồi mới mở đáp án. Không được chọn đáp án thì não phải tự nhớ lại, và đó mới là thứ đo được storage strength.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Lỗ Kalai (LR-0004) đã được trả lời đúng một lần ở bài 7, nhưng ở dạng trắc nghiệm. Lần này là lần giãn cách thứ hai, và phải tự nhớ ra.</aside>
+
+<details>
+  <summary>Tự diễn đạt: vì sao một rubric "đúng 1, sai 0, không biết 0" lại nuôi hallucination? Viết ra trước, rồi mới mở.</summary>
+  <p>Khi sai và abstain cùng được 0 điểm, đoán luôn có kỳ vọng điểm cao hơn bỏ trống. Model (hoặc prompt) nào đoán bạo hơn sẽ leo bảng xếp hạng, nên áp lực tối ưu kéo về phía đoán tự tin. Đó là nửa <em>vì sao hallucination dai dẳng</em>. Nửa kia là <em>vì sao nó sinh ra</em>, và câu trả lời là pretraining. Cách sửa là chấm ba mức: đúng, abstain, sai, trong đó sai bị phạt nặng hơn abstain (Kalai et al., bài 6).</p>
+  <p>So với câu của anh: có đủ hai ý "đoán có kỳ vọng điểm cao hơn" và "cách sửa là phạt sai nặng hơn abstain" không? Thiếu ý nào thì báo tôi.</p>
+</details>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Bài 1 và 7: prompt 50.000 token, request thứ hai hit cache toàn bộ prefix. TTFT giảm vì sao?</p>
+  <ul class="quiz-options">
+    <li data-correct>Bỏ qua bước đọc prefix</li>
+    <li>Model sinh output nhanh hơn</li>
+    <li>Response được lấy từ cache</li>
+    <li>Tokenizer chạy ít việc hơn</li>
+  </ul>
+  <p class="quiz-explain">Cache giữ lại <em>kết quả đã tính cho prefix</em>, chứ không giữ response. Request sau chỉ phải xử lý phần đuôi mới, nên thời gian tới token đầu tiên giảm. Tốc độ sinh từng token sau đó thì không đổi. Phần 1 dưới đây gọi tên hai bước này là prefill và decode, và "kết quả đã tính cho prefix" chính là KV cache.</p>
+</div>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Hai pha, hai nút thắt khác nhau</h2>
+
+<p>Mỗi request đi qua hai pha:<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://developer.nvidia.com/blog/mastering-llm-techniques-inference-optimization/">NVIDIA — "Mastering LLM Techniques: Inference Optimization"</a> và <a href="https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices">Databricks — "LLM Inference Performance Engineering: Best Practices" (2023)</a>.</aside>
+
+<table>
+  <tr><th>Pha</th><th>Làm gì</th><th>Nghẽn ở đâu</th><th>Hiện ra thành</th></tr>
+  <tr><td><strong>Prefill</strong></td><td>Đọc toàn bộ prompt một lượt, tính K/V cho mọi token rồi cất vào KV cache</td><td>Compute: "a matrix-matrix operation that's highly parallelized"</td><td>TTFT</td></tr>
+  <tr><td><strong>Decode</strong></td><td>Sinh từng token một. Mỗi bước phải đọc lại toàn bộ weights và KV cache từ bộ nhớ GPU</td><td>Băng thông bộ nhớ: "a memory-bound operation"</td><td>TPOT / ITL (thời gian giữa các token)</td></tr>
+</table>
+
+
+<figure class="diagram">
+<svg viewBox="0 0 720 165" role="img" aria-label="Timeline một request: khối prefill lớn, sau đó 16 bước decode nhỏ; TTFT tính tới hết token đầu, ITL là khoảng giữa hai token">
+  <defs><marker id="d-arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="d-arrowhead" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+  <text x="206" y="30" class="d-strong">Decode</text>
+  <text x="262" y="30" class="d-muted">mỗi bước sinh 1 token, đọc lại toàn bộ weights + KV</text>
+  <rect class="d-accent-fill" x="40" y="64" width="160" height="30"/>
+  <text x="120" y="84" class="d-center d-strong">Prefill</text>
+  <text x="120" y="52" class="d-center d-muted">đọc cả prompt một lượt</text>
+  <rect class="d-fill" x="206" y="64" width="22" height="30"/><rect class="d-fill" x="234" y="64" width="22" height="30"/><rect class="d-fill" x="262" y="64" width="22" height="30"/><rect class="d-fill" x="290" y="64" width="22" height="30"/><rect class="d-fill" x="318" y="64" width="22" height="30"/><rect class="d-fill" x="346" y="64" width="22" height="30"/><rect class="d-fill" x="374" y="64" width="22" height="30"/><rect class="d-fill" x="402" y="64" width="22" height="30"/><rect class="d-fill" x="430" y="64" width="22" height="30"/><rect class="d-fill" x="458" y="64" width="22" height="30"/><rect class="d-fill" x="486" y="64" width="22" height="30"/><rect class="d-fill" x="514" y="64" width="22" height="30"/><rect class="d-fill" x="542" y="64" width="22" height="30"/><rect class="d-fill" x="570" y="64" width="22" height="30"/><rect class="d-fill" x="598" y="64" width="22" height="30"/><rect class="d-fill" x="626" y="64" width="22" height="30"/>
+  <path class="d-line" d="M284,58 V52 H312 V58"/>
+  <text x="298" y="46" class="d-center d-small d-accent">ITL</text>
+  <path class="d-arrow" d="M30,100 H700"/>
+  <text x="700" y="118" class="d-end d-muted">thời gian</text>
+  <path class="d-line" d="M40,108 V114 H228 V108"/>
+  <text x="134" y="130" class="d-center d-small d-accent">TTFT</text>
+  <text x="120" y="156" class="d-center d-muted">nghẽn: compute</text>
+  <text x="427" y="156" class="d-center d-muted">nghẽn: băng thông bộ nhớ</text>
+</svg>
+<figcaption>Hình 1. Vòng đời một request. Prefill là một khối lớn: prompt càng dài thì khối càng dài, và TTFT kéo dài theo. Decode là chuỗi bước nhỏ đều nhau: output càng dài thì chuỗi càng dài. Prefix cache hit (bài 7) cắt bớt khối cam; quantize weights làm từng ô xám ngắn lại.</figcaption>
+</figure>
+
+<p>Databricks gói lại trong một công thức: <strong>latency = TTFT + TPOT × số output token</strong>. Nó khớp với điều anh đã biết từ bài 1: input dài thì TTFT tăng, output dài thì tổng latency tăng. Giờ anh biết thêm <em>vì sao</em>: hai pha nghẽn ở hai tài nguyên khác nhau của GPU.</p>
+
+<p>Hệ quả của việc decode bị nghẽn ở băng thông, tính nhẩm được:</p>
+<ul>
+  <li><strong>Trần tốc độ ở batch 1 ≈ băng thông ÷ dung lượng weights.</strong> Llama 3.1 8B ở BF16 nặng khoảng 16 GB. Trên H100 (3,35 TB/s), mỗi giây đọc hết weights được khoảng 200 lần, tức trần khoảng 200 token/s. Trên L4 (300 GB/s) thì chỉ khoảng 19 token/s. Thực tế còn thấp hơn, nhưng con số này đủ để loại sớm những phương án không khả thi.<span class="sidenote-ref"></span></li>
+  <li><strong>Batching gần như miễn phí, cho tới một ngưỡng.</strong> Weights được đọc <em>một lần cho mỗi bước</em>, dù trong batch có 1 hay 50 sequence. Vì vậy gom nhiều request vào cùng một bước làm throughput tăng mạnh, còn latency của mỗi người chỉ tăng nhẹ. Databricks đo được: batch 64 cho throughput tăng 14×, latency tăng 4×.</li>
+</ul>
+<aside class="sidenote">Băng thông lấy từ trang sản phẩm NVIDIA: <a href="https://www.nvidia.com/en-us/data-center/l4/">L4</a> 300 GB/s, <a href="https://www.nvidia.com/en-us/data-center/h100/">H100 SXM</a> 3,35 TB/s. Phép chia là ước lượng của bài này, không phải số đo. Con số 14×/4× của Databricks đo năm 2023 với static batching trên MPT-7B, chỉ nên dùng để hình dung độ lớn.</aside>
+
+<p>Muốn batch lớn thì mỗi sequence trong batch cần chỗ trong KV cache. Đây là chỗ bộ nhớ trở thành nút thắt.</p>
+
+<h2>2. Bộ nhớ GPU = weights + KV cache</h2>
+
+<pre>weights  ≈ số tham số × byte mỗi tham số      (BF16 = 2, FP8 = 1, INT4 ≈ 0.5)
+KV/token = 2 × layers × kv_heads × head_dim × byte   (2 = một K + một V)
+KV cache khả dụng ≈ VRAM × gpu_memory_utilization − weights − overhead</pre>
+
+<p>Công thức KV lấy <code>kv_heads</code>, không lấy số attention head. Các model hiện nay dùng GQA: nhiều query head dùng chung một cặp K/V. Công thức trong blog NVIDIA dùng <code>num_heads</code>, nên với Llama 3 sẽ tính dư ra 4–8 lần.<span class="sidenote-ref"></span> Tra số của model thật (cả ba đều có <code>head_dim</code> = 128):</p>
+<aside class="sidenote">Databricks dùng <code>n_kv_heads</code>. Thông số Llama 3.1 lấy từ <a href="https://arxiv.org/abs/2407.21783">Meta, "The Llama 3 Herd of Models"</a>, bảng 3. Thông số Qwen3 lấy từ <code>config.json</code> trên Hugging Face.</aside>
+
+<table>
+  <tr><th>Model</th><th class="num">Layers</th><th class="num">KV heads</th><th class="num">KV / token (BF16)</th><th class="num">Token / GiB</th></tr>
+  <tr><td>Llama 3.1 8B</td><td class="num">32</td><td class="num">8</td><td class="num">128 KiB</td><td class="num">~8.200</td></tr>
+  <tr><td>Qwen3-32B</td><td class="num">64</td><td class="num">8</td><td class="num">256 KiB</td><td class="num">~4.100</td></tr>
+  <tr><td>Llama 3.1 70B</td><td class="num">80</td><td class="num">8</td><td class="num">320 KiB</td><td class="num">~3.300</td></tr>
+</table>
+
+<p>Một sequence 8k token trên Llama 70B chiếm khoảng 2,5 GiB KV. Giờ ghép hai vế lại. vLLM mặc định dùng <strong>92%</strong> VRAM (<code>gpu_memory_utilization = 0.92</code> từ các bản gần đây; nhiều tutorial cũ vẫn ghi 0.9).<span class="sidenote-ref"></span> Số dưới đây làm tròn, bỏ qua overhead activation, nên thực tế còn thấp hơn một chút:</p>
+<aside class="sidenote"><a href="https://docs.vllm.ai/en/latest/configuration/engine_args.html">vLLM engine args</a>. Default đọc từ code của bản v0.30.0 (2026-09-22). "This is a per-instance limit": hai instance trên cùng GPU phải chia nhau con số này.</aside>
+
+<table>
+  <tr><th>Cấu hình</th><th class="num">Weights</th><th class="num">Còn cho KV</th><th class="num">Token KV</th><th>Nghĩa là</th></tr>
+  <tr><td>8B BF16 · 1× L4 24 GB</td><td class="num">~15 GiB</td><td class="num">~5 GiB</td><td class="num">~45k</td><td>Khoảng 5 sequence dài 8k</td></tr>
+  <tr><td>8B FP8 · 1× L4 24 GB</td><td class="num">~7,5 GiB</td><td class="num">~13 GiB</td><td class="num">~105k</td><td>Gấp đôi chỗ chứa, trần decode cũng gấp đôi</td></tr>
+  <tr><td>8B BF16 · 1× H100 80 GB</td><td class="num">~15 GiB</td><td class="num">~54 GiB</td><td class="num">~440k</td><td>Khoảng 50 sequence dài 8k</td></tr>
+  <tr><td>70B BF16 · 1× H100</td><td class="num">~130 GiB</td><td class="num">—</td><td class="num">—</td><td><strong>Không nạp nổi weights</strong></td></tr>
+  <tr><td>70B FP8 · 1× H100</td><td class="num">~65 GiB</td><td class="num">~3,5 GiB</td><td class="num">~11k</td><td>Khởi động được, nhưng chỉ phục vụ được khoảng 1 người</td></tr>
+  <tr><td>70B BF16 · 4× H100 (TP=4)</td><td class="num">~130 GiB</td><td class="num">~145 GiB</td><td class="num">~470k</td><td>Cấu hình phục vụ production thực sự</td></tr>
+</table>
+
+
+<figure class="diagram">
+<svg viewBox="0 0 740 215" role="img" aria-label="Ba thanh bộ nhớ GPU vẽ đúng tỉ lệ: weights, KV cache và phần 8% chừa lại">
+  <rect class="d-fill" x="170" y="6" width="14" height="12"/><text x="190" y="16" class="d-small">weights</text>
+  <rect class="d-ok-fill" x="258" y="6" width="14" height="12"/><text x="278" y="16" class="d-small">KV cache (chỗ phục vụ user)</text>
+  <rect class="d-reserve" x="468" y="6" width="14" height="12"/><text x="488" y="16" class="d-small">8% vLLM chừa lại (0.92)</text>
+  <text x="160" y="57" class="d-end d-small d-strong">8B BF16</text>
+  <text x="160" y="71" class="d-end d-muted">1× L4 · 24 GB</text>
+  <rect class="d-fill" x="170" y="44" width="112.5" height="28"/>
+  <rect class="d-ok-fill" x="282.5" y="44" width="42.0" height="28"/>
+  <rect class="d-reserve" x="324.5" y="44" width="13.5" height="28"/>
+  <text x="178" y="62" class="d-small">weights 15</text>
+  <text x="346.0" y="62" class="d-small d-ok">KV ≈ 5 GiB → ~45k token ≈ 5 × 8k</text>
+  <text x="160" y="113" class="d-end d-small d-strong">8B BF16</text>
+  <text x="160" y="127" class="d-end d-muted">1× H100 · 80 GB</text>
+  <rect class="d-fill" x="170" y="100" width="112.5" height="28"/>
+  <rect class="d-ok-fill" x="282.5" y="100" width="402.0" height="28"/>
+  <rect class="d-reserve" x="684.5" y="100" width="44.2" height="28"/>
+  <text x="178" y="118" class="d-small">weights 15</text>
+  <text x="290.5" y="118" class="d-small d-ok">KV ≈ 54 GiB → ~440k token ≈ 50 × 8k</text>
+  <text x="160" y="169" class="d-end d-small d-strong">70B FP8</text>
+  <text x="160" y="183" class="d-end d-muted">1× H100 · 80 GB</text>
+  <rect class="d-fill" x="170" y="156" width="487.5" height="28"/>
+  <rect class="d-ok-fill" x="657.5" y="156" width="26.2" height="28"/>
+  <rect class="d-reserve" x="683.8" y="156" width="45.0" height="28"/>
+  <text x="178" y="174" class="d-small">weights FP8 ≈ 65 GiB</text>
+  <text x="728.8" y="200" class="d-end d-small d-ok">KV ≈ 3,5 GiB → ~11k token ≈ 1 × 8k</text>
+</svg>
+<figcaption>Hình 2. Cùng một thước đo: 7,5 px = 1 GiB, bỏ qua overhead activation. Thanh L4 ngắn vì GPU nhỏ. Hai thanh H100 dài bằng nhau nhưng phần xanh khác nhau khoảng 15 lần. Phần xanh, chứ không phải tổng VRAM, mới quyết định phục vụ được bao nhiêu người.</figcaption>
+</figure>
+
+<p>Dòng 70B FP8 trên 1× H100 là cái bẫy kinh điển: demo chạy ngon, lên production thì sập. <strong>"Model nạp được" khác với "phục vụ được N user"</strong>. Câu hỏi đúng không phải "có vừa không" mà là "sau khi nạp weights thì còn bao nhiêu token KV".</p>
+
+<p>Còn hai đòn bẩy nữa, đều có giá phải trả:<span class="sidenote-ref"></span></p>
+<ul>
+  <li><strong>Quantize weights.</strong> Theo vLLM, FP8 cho "2x reduction in model memory requirements and up to a 1.6x improvement in throughput with minimal impact on accuracy". FP8 chạy trọn vẹn trên GPU Ada/Hopper/Blackwell (L4 là Ada), còn Ampere như A100 chỉ quantize được weights. INT4 tiết kiệm thêm một nửa nữa, nhưng doc khuyên phải chạy eval accuracy trước khi dùng. Đổi chất lượng lấy bộ nhớ thì bắt buộc phải đo (bài 6).</li>
+  <li><strong>Quantize KV cache</strong> (<code>kv_cache_dtype="fp8"</code>): giảm nửa KV/token, nên chứa được nhiều token hơn và context dài hơn. Doc khuyên nên calibrate để giữ accuracy.</li>
+</ul>
+<aside class="sidenote"><a href="https://docs.vllm.ai/en/latest/features/quantization/">vLLM — Quantization</a> (FP8, INT4 W4A16, quantized KV cache). AutoAWQ đã deprecated, quy trình quantize giờ chuyển sang llm-compressor.</aside>
+
+<h2>3. vLLM lấp đầy KV cache thế nào</h2>
+
+<p>Năm 2023, paper PagedAttention đo được rằng các serving system thời đó chỉ dùng <strong>20,4–38,2%</strong> bộ nhớ KV cache để chứa token thật, phần còn lại bị lãng phí do cấp phát liền khối theo độ dài tối đa. vLLM áp dụng ý tưởng <em>paging</em> của hệ điều hành: chia KV cache thành các block cố định, không cần nằm liền nhau. Nhờ vậy lãng phí chỉ còn trong phạm vi một block (dưới 4%), và throughput tăng <strong>2–4×</strong> ở cùng mức latency.<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://arxiv.org/abs/2309.06180">Kwon et al., "Efficient Memory Management for LLM Serving with PagedAttention" (SOSP 2023)</a>. Đó là số liệu so với baseline năm 2023. Ngày nay mọi engine lớn đều dùng paged KV, nên đây là mặc định chứ không còn là lợi thế riêng của vLLM.</aside>
+
+<p>Ba cơ chế còn lại, tất cả đều <strong>bật mặc định</strong> trong vLLM V1:<span class="sidenote-ref"></span></p>
+<ul>
+  <li><strong>Continuous batching</strong>: batch được xếp lại <em>sau mỗi bước decode</em>. Request nào xong thì rời batch, request mới vào ngay mà không phải chờ cả batch xong. Đây là lý do batching "miễn phí" ở mục 1 dùng được trong thực tế.</li>
+  <li><strong>Chunked prefill</strong>: prompt dài bị cắt thành nhiều khúc, xen vào giữa các bước decode, để một prompt 100k token không làm đứng hình mọi user đang nhận token. Knob đi kèm là <code>max_num_batched_tokens</code>: nhỏ thì ITL tốt hơn, lớn thì TTFT tốt hơn.</li>
+  <li><strong>Automatic prefix caching</strong>: "caches the KV cache of existing queries, so that a new query can directly reuse the KV cache if it shares the same prefix". Đây chính là prompt caching ở bài 7, giờ nhìn từ phía server: một cache hit là một lần prefill được bỏ qua. Doc nói rõ nó "only reduces the time of processing the queries (the prefilling phase)", còn decode thì không nhanh hơn.</li>
+</ul>
+<aside class="sidenote"><a href="https://docs.vllm.ai/en/latest/configuration/optimization.html">vLLM — Optimization and tuning</a>, <a href="https://docs.vllm.ai/en/latest/features/automatic_prefix_caching.html">Automatic prefix caching</a>. Trang APC vẫn ghi "Set <code>enable_prefix_caching=True</code> to enable", nhưng code v0.30.0 đã để default là <code>True</code>. Doc đi sau code.</aside>
+
+<p><strong>Khi KV cache đầy:</strong> vLLM V1 <em>preempt</em> bớt request. Nó vứt KV của request đó đi, sau này tính lại từ đầu (<code>RECOMPUTE</code>), rồi ghi log "…is preempted by PreemptionMode.RECOMPUTE mode because there is not enough KV cache space". Service không sập, chỉ chậm dần một cách âm thầm. Cách xử lý theo doc: tăng <code>gpu_memory_utilization</code>, giảm <code>max_num_seqs</code> hoặc <code>max_num_batched_tokens</code>, hoặc tăng <code>tensor_parallel_size</code>.</p>
+
+<h2>4. Lên Kubernetes: đừng mang phản xạ của stateless service theo</h2>
+
+<p>Một pod vLLM không phải Spring Boot service. Có hai phản xạ quen tay sẽ sai:</p>
+
+<p><strong>1. Round-robin load balancing.</strong> Blog chính thức của Kubernetes viết: "LLM inference sessions are often long-running, resource-intensive, and partially stateful… Traditional load balancers focused on HTTP path or round-robin lack the specialized capabilities needed". Chữ "partially stateful" ở đây chính là KV cache và prefix cache nằm trong từng pod. Lịch sử của một hội thoại chỉ có KV ở pod đã xử lý lượt trước. Round-robin gửi lượt sau đi chỗ khác, nên pod mới phải prefill lại cả lịch sử, trong khi có thể lại rơi đúng vào pod đang đầy KV. Router cho LLM chọn pod theo <em>độ dài hàng đợi, mức dùng KV cache và trạng thái prefix cache</em>.<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://kubernetes.io/blog/2025/06/05/introducing-gateway-api-inference-extension/">Kubernetes blog — Introducing Gateway API Inference Extension (06/2025)</a>. Project đã lên v1 (bản v1.6.2, 2026-09-17).</aside>
+
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+  subgraph RR["K8s Service thường: round-robin"]
+    direction LR
+    A1["Lượt 5 của hội thoại A"] --> S{{"Service"}}
+    S -. "1/6" .-> P1["Pod 1: có sẵn KV của A"]
+    S -- "5/6" --> P2["Pod 2..6: chưa có KV của A → prefill lại cả lịch sử"]
+  end
+  subgraph PA["Router prefix-aware: Inference Extension / llm-d"]
+    direction LR
+    A2["Lượt 5 của hội thoại A"] --> R{{"Endpoint Picker: queue · KV usage · prefix cache"}}
+    R == "chọn" ==> Q1["Pod 1: có sẵn KV của A → chỉ prefill phần mới"]
+    R -. "bỏ qua: queue dài" .-> Q3["Pod 3"]
+  end
+  RR ~~~ PA
+</pre>
+<figcaption>Hình 3. Cùng một request, hai cách chia tải. Round-robin coi pod là stateless, nên 5/6 số lượt phải prefill lại từ đầu. Router cho LLM đọc metric của từng pod (bảng dưới) và gửi request về nơi đã có sẵn KV.</figcaption>
+</figure>
+
+<p><strong>2. HPA theo CPU hoặc GPU utilization.</strong> Theo best practice của GKE: CPU "can lead to suboptimal performance and costs". GPU utilization "does not measure how much work is being done while the GPU is active". GPU memory thì vô dụng, vì vLLM chiếm trước 92% VRAM ngay khi khởi động, nên metric này chỉ scale lên mà không bao giờ scale xuống. Tín hiệu nên dùng là <strong>queue size</strong> khi tối ưu throughput và cost, và <strong>batch size</strong> khi latency là ưu tiên.<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://docs.cloud.google.com/kubernetes-engine/docs/best-practices/machine-learning/inference/autoscaling">GKE — Best practices for autoscaling LLM inference workloads</a>. Áp dụng được cho K8s nói chung, không riêng GKE.</aside>
+
+<table>
+  <tr><th>Cần biết</th><th>Metric vLLM (Prometheus)</th></tr>
+  <tr><td>TTFT</td><td><code>vllm:time_to_first_token_seconds</code></td></tr>
+  <tr><td>Thời gian giữa hai token</td><td><code>vllm:inter_token_latency_seconds</code></td></tr>
+  <tr><td>KV cache đầy tới đâu</td><td><code>vllm:kv_cache_usage_perc</code> (tên cũ là <code>gpu_cache_usage_perc</code>, nên dashboard cũ sẽ vỡ)</td></tr>
+  <tr><td>Hàng đợi (tín hiệu scale)</td><td><code>vllm:num_requests_waiting</code>, <code>vllm:num_requests_running</code></td></tr>
+  <tr><td>Chậm âm thầm</td><td><code>vllm:num_preemptions</code></td></tr>
+  <tr><td>Prefix cache hit rate</td><td><code>vllm:prefix_cache_hits</code> ÷ <code>vllm:prefix_cache_queries</code> (tự tính bằng PromQL)</td></tr>
+</table>
+<p class="meta">Theo <a href="https://docs.vllm.ai/en/latest/usage/metrics.html">vLLM — Metrics</a>.</p>
+
+<p>Stack có sẵn thay vì tự dựng:</p>
+<ul>
+  <li><a href="https://gateway-api-inference-extension.sigs.k8s.io/">Gateway API Inference Extension</a>: project chính thức của K8s, gồm CRD <code>InferencePool</code> và một Endpoint Picker chọn pod theo metric.</li>
+  <li><a href="https://llm-d.ai/docs/architecture">llm-d</a>: router, KV-cache affinity, tách riêng prefill và decode. Còn pre-1.0 (v0.9).</li>
+  <li><a href="https://docs.vllm.ai/projects/production-stack/en/latest/">vLLM production-stack</a>: Helm chart kèm router prefix-aware, autoscale bằng KEDA.</li>
+  <li><a href="https://kserve.github.io/website/docs/intro">KServe</a>: <code>LLMInferenceService</code> dùng backend vLLM, scale theo token throughput và queue depth.</li>
+</ul>
+
+<h2>5. Khi nào self-host thắng API</h2>
+
+<p>Nhóm tác giả của applied-llms.org (Eugene Yan, Hamel Husain và cộng sự) đặt tên hẳn một mục là <strong>"No GPUs before PMF"</strong>, và mục kế tiếp là "Start with inference APIs, but don't be afraid of self-hosting".<span class="sidenote-ref"></span> Lý do chính đáng để self-host:</p>
+<aside class="sidenote"><a href="https://applied-llms.org/#start-with-inference-apis-but-dont-be-afraid-of-self-hosting">"What We Learned from a Year of Building with LLMs"</a>. Ví dụ trong bài: BuzzFeed giảm 80% cost nhờ self-host model fine-tune.</aside>
+
+<table>
+  <tr><th>Lý do</th><th>Nguyên văn</th><th>Mạnh khi</th></tr>
+  <tr><td>Dữ liệu không được rời mạng</td><td>"the only way to use models without sending confidential / private data out of your network, as required in regulated industries like healthcare and finance"</td><td>Banking, y tế, yêu cầu lưu trữ dữ liệu trong nước</td></tr>
+  <tr><td>Thoát giới hạn của provider</td><td>"rate limits, model deprecations, and usage restrictions"</td><td>Cần pin một model nhiều năm liền</td></tr>
+  <tr><td>Cost ở quy mô lớn</td><td>"can reduce cost at large scale"</td><td>Traffic lớn và <em>đều</em>, model nhỏ hoặc đã fine-tune</td></tr>
+</table>
+
+<p>Chữ quyết định là <strong>"đều"</strong>. GPU tính tiền theo giờ, bất kể đang bận hay rảnh. Cost mỗi token tỉ lệ nghịch với độ đầy của batch (mục 1). Chatbot nội bộ chỉ chạy giờ hành chính thì GPU rảnh 2/3 thời gian, trong khi API không tính tiền lúc anh không gọi. Trước khi tin một con số "self-host rẻ hơn X lần", hãy hỏi con số đó giả định GPU bận bao nhiêu phần trăm. (Các bài blog mình tìm được đưa ra ngưỡng hoà vốn lệch nhau hàng chục lần, nên mình không trích.)</p>
+
+<h2>6. Bài tập — đọc và phán đoán</h2>
+
+<details>
+  <summary>A. Team đề xuất: "Chatbot nội bộ, Llama 3.1 8B BF16 trên 1× L4 cho rẻ. Context 8k, cao điểm 20 người dùng đồng thời." Anh duyệt không?</summary>
+  <p><strong>Bộ nhớ:</strong> weights khoảng 15 GiB, còn khoảng 5 GiB cho KV, tức khoảng 45k token, chỉ đủ khoảng 5 sequence 8k. Với 20 người, KV sẽ đầy, preempt liên tục và <code>num_preemptions</code> tăng vọt. Thực tế nhiều hội thoại ngắn hơn 8k, nên cần đo phân phối độ dài context thật trước khi kết luận.</p>
+  <p><strong>Tốc độ:</strong> trần decode khoảng 300 GB/s ÷ 16 GB ≈ 19 bước/giây. Mọi user trong batch cùng nhận token ở nhịp đó hoặc chậm hơn.</p>
+  <p><strong>Phương án:</strong> FP8 weights (L4 là Ada nên hỗ trợ đầy đủ): KV lên khoảng 105k token và trần decode gấp đôi. Nhưng phải chạy eval trước và sau khi quantize. Hoặc hỏi ngược lại: dữ liệu có bắt buộc phải nằm trong mạng không? Nếu không, API model nhỏ cộng prompt caching (bài 7) gần như chắc chắn rẻ hơn, vì traffic chỉ có giờ hành chính.</p>
+</details>
+
+<details>
+  <summary>B. 6 pod vLLM sau một K8s Service thường. Chatbot nhiều lượt: system prompt ngắn, nhưng lịch sử mỗi hội thoại dài vài chục nghìn token. Grafana: prefix cache hit rate chỉ khoảng 17%, TTFT p50 cao hơn hẳn benchmark trên 1 pod. Vì sao?</summary>
+  <p>Mỗi lượt mới gửi lại toàn bộ lịch sử (stateless, bài 1). KV của lịch sử đó chỉ nằm trong <em>pod đã xử lý lượt trước</em>. Service K8s phân phối request gần như ngẫu nhiên, nên xác suất lượt sau rơi đúng pod cũ khoảng 1/6 ≈ 17%. 5/6 lượt còn lại phải prefill lại cả lịch sử từ đầu, và TTFT tăng theo. Đây là "partially stateful" trong blog K8s. (System prompt chung thì pod nào cũng sớm cache được, nên nó không phải thủ phạm.)</p>
+  <p><strong>Sửa:</strong> router prefix-aware / KV-cache-aware (Inference Extension, llm-d, production-stack), hoặc ít nhất là session affinity theo conversation ID. Kiểm chứng bằng số: hit rate và TTFT p50 trước và sau. Đây là assertion L1 của bài 6, áp vào hạ tầng.</p>
+</details>
+
+<details>
+  <summary>C. Dashboard: <code>kv_cache_usage_perc</code> sát 100%, <code>num_requests_waiting</code> tăng dần, GPU utilization 98%, còn HPA (theo GPU util, target 80%) đã max replica. Chẩn đoán và sửa?</summary>
+  <p><strong>Chẩn đoán:</strong> nghẽn KV cache, không phải compute. Utilization 98% không nói GPU đang làm được nhiều việc có ích. Nó chỉ nói GPU đang bận, mà bận có thể vì recompute sau khi preempt. Kiểm tra <code>num_preemptions</code>.</p>
+  <p><strong>Sửa theo thứ tự:</strong> (1) chuyển HPA sang <code>num_requests_waiting</code> để hành vi scale có nghĩa. (2) Tăng chỗ KV mỗi pod bằng FP8 KV cache, FP8 weights, hoặc tăng TP. (3) Đặt <code>max_model_len</code> sát nhu cầu thật để không cho một request 128k chiếm chỗ của 16 request 8k. (4) Replica max là trần <em>ngân sách</em>. Nếu chạm trần thường xuyên thì đây là câu hỏi cho bài 5: có nên đẩy một phần traffic sang API không.</p>
+</details>
+
+<h2>7. Kiểm tra lại</h2>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Ở batch nhỏ, pha decode bị giới hạn chủ yếu bởi gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Băng thông bộ nhớ của GPU</li>
+    <li>Số nhân tính toán của GPU</li>
+    <li>Tốc độ mạng giữa các pod</li>
+    <li>Dung lượng ổ đĩa của node</li>
+  </ul>
+  <p class="quiz-explain">Mỗi bước decode phải đọc lại toàn bộ weights và KV từ bộ nhớ GPU chỉ để sinh một token cho mỗi sequence. NVIDIA: "this is a memory-bound operation". Vì weights được đọc một lần cho cả batch nên batching tăng throughput gần như miễn phí.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Llama 3.1 70B ở BF16, một H100 80 GB. Kết luận đúng?</p>
+  <ul class="quiz-options">
+    <li data-correct>Không nạp nổi, weights đã ~140 GB</li>
+    <li>Nạp được, còn nhiều chỗ cho KV</li>
+    <li>Nạp được nếu bật thêm prefix caching</li>
+    <li>Nạp được khi giảm max_num_seqs đủ thấp</li>
+  </ul>
+  <p class="quiz-explain">70 tỷ tham số × 2 byte ≈ 140 GB, vượt 80 GB trước cả khi tính KV. Prefix caching và <code>max_num_seqs</code> chỉ tác động lên KV, không làm weights nhẹ đi. Muốn nạp được thì cần TP trên nhiều GPU, hoặc quantize. Nhưng FP8 trên 1 GPU chỉ còn khoảng 11k token KV.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">HPA cho deployment vLLM nên scale theo tín hiệu nào?</p>
+  <ul class="quiz-options">
+    <li data-correct>Số request đang chờ trong hàng</li>
+    <li>Mức CPU trung bình của pod</li>
+    <li>GPU memory đang được cấp phát</li>
+    <li>Số request mỗi giây đi vào</li>
+  </ul>
+  <p class="quiz-explain">GKE khuyến nghị queue size (<code>vllm:num_requests_waiting</code>). CPU không phản ánh tải inference. GPU memory bị vLLM chiếm trước 92% nên chỉ scale lên. RPS bỏ qua độ dài token: 10 request 100k token nặng hơn 100 request 1k token.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Log vLLM liên tục báo "preempted… not enough KV cache space". Hệ quả trực tiếp?</p>
+  <ul class="quiz-options">
+    <li data-correct>Request bị tính lại, chậm âm thầm</li>
+    <li>Pod bị OOMKilled rồi khởi động lại</li>
+    <li>Request bị trả lỗi 503 tức thì</li>
+    <li>Model tự cắt ngắn context của user</li>
+  </ul>
+  <p class="quiz-explain">V1 mặc định dùng <code>RECOMPUTE</code>: vứt KV của request bị preempt, sau đó prefill lại. Không có lỗi, không restart, chỉ có latency và <code>num_preemptions</code> tăng. Loại hỏng âm thầm này chỉ phát hiện được nếu dashboard có sẵn metric đó.</p>
+</div>
+
+<hr>
+
+<h2>Đọc thêm — primary source cho bài này</h2>
+<p><a href="https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices">Databricks — "LLM Inference Performance Engineering: Best Practices"</a> (~20 phút). Đọc kỹ các mục <em>metrics</em> (TTFT, TPOT, throughput), <em>memory bandwidth is key</em> và <em>batching</em>. Sau đó đọc <a href="https://docs.cloud.google.com/kubernetes-engine/docs/best-practices/machine-learning/inference/autoscaling">GKE — Autoscaling LLM inference</a> (~10 phút), phần anh sẽ cần ngay khi dựng HPA. Muốn xem cộng đồng chạy thực tế ra sao thì vào <a href="https://www.reddit.com/r/LocalLLaMA/">r/LocalLLaMA</a>: ở đó có nhiều số đo thật trên phần cứng thật.</p>
+
+<div class="callout">
+  <span class="label">Hỏi tôi</span>
+  <p>Báo cho tôi ba thứ: (1) câu tự diễn đạt ở mục 0 của anh, dán nguyên văn để tôi chấm; (2) quiz mục 0 được mấy/1 và quiz cuối được mấy/4, câu nào sai; (3) nếu team anh đang cân nhắc self-host thật, cho tôi biết model, GPU, số user đồng thời và độ dài context. Tôi sẽ tính cùng anh theo bảng ở mục 2. Chỗ nào chưa rõ thì cứ hỏi, nhất là phần decode bị nghẽn băng thông, vì đó là ý nền của cả bài.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0007-context-engineering-va-prompt-caching.html">← Bài 7</a>
+  <a href="../reference/self-host-inference.html">Cheat sheet: Self-host inference →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/diagram.js"></script>
+</body>
+</html>

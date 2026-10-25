@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Agent Memory</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Agent Memory · cập nhật 2026-10-24 · <a href="../lessons/0007-agent-memory.html">Bài 7</a> · <a href="skills.html">Skill</a> · <a href="glossary.html">Glossary</a> · <a href="lo-trinh.html">Lộ trình</a></p>
+
+<h1>Agent Memory</h1>
+<p class="subtitle">Khung lưu trữ trạng thái dài hạn cho AI Agent: vượt qua giới hạn phi trạng thái của LLM và ngân sách hữu hạn của context window.</p>
+
+<h2>Bốn ngăn nhớ theo khung CoALA</h2>
+<table>
+  <tr><th>Ngăn nhớ</th><th>Bản chất</th><th>Đặc điểm</th><th>Tương đương Backend</th></tr>
+  <tr>
+    <td><strong>Working Memory</strong></td>
+    <td>Context window hiện tại</td>
+    <td>Ngắn hạn, tốc độ cao, mất khi hết phiên hoặc sau compaction</td>
+    <td>RAM / CPU Cache / ThreadLocal</td>
+  </tr>
+  <tr>
+    <td><strong>Episodic Memory</strong></td>
+    <td>Nhật ký chuỗi sự kiện, hành vi trong quá khứ</td>
+    <td>Tuần tự theo thời gian, append-only, lưu vết lỗi &amp; quyết định cũ</td>
+    <td>WAL / Audit Trail / Event Log</td>
+  </tr>
+  <tr>
+    <td><strong>Semantic Memory</strong></td>
+    <td>Tri thức, sự thật, quy tắc trừu tượng</td>
+    <td>Độc lập thời gian, được đúc kết từ nhiều trải nghiệm</td>
+    <td>Normalized Relational DB (PostgreSQL)</td>
+  </tr>
+  <tr>
+    <td><strong>Procedural Memory</strong></td>
+    <td>Kỹ năng, công cụ, quy trình hành động</td>
+    <td>Logic thực thi tất định (Skills, MCP tools, scripts)</td>
+    <td>Application Code / Stored Procedures</td>
+  </tr>
+</table>
+<p class="small">Nguồn: Sumers et al., <a href="https://arxiv.org/abs/2309.02427">"Cognitive Architectures for Language Agents" (CoALA)</a>, TMLR 2024.</p>
+
+<h2>Vòng đời 4 bước của ký ức</h2>
+<ol>
+  <li><strong>Capture (Ghi nhận):</strong>
+    <ul>
+      <li><em>Explicit (Chủ động):</em> Người dùng gõ lệnh (<code>/remember</code>). Chính xác 100%, không rác.</li>
+      <li><em>Implicit (Tự động):</em> Model nền quét transcript tự trích xuất fact. Tiện lợi nhưng dễ lẫn rác và thông tin tạm bợ.</li>
+    </ul>
+  </li>
+  <li><strong>Retrieve (Truy xuất):</strong>
+    <ul>
+      <li><em>Exact Index Pointer:</em> Danh mục 1 dòng (<code>MEMORY.md</code>). Rẻ, chính xác, model tự đọc theo suy luận.</li>
+      <li><em>Vector Search (RAG):</em> Cosine similarity qua embeddings. Mạnh khi ngữ nghĩa mơ hồ, nhưng mù mốc thời gian và làm nhòe từ khóa kỹ thuật.</li>
+      <li><em>Grep / Agentic Search:</em> Harness hoặc model chủ động tìm kiếm file khi có nghi vấn.</li>
+    </ul>
+  </li>
+  <li><strong>Consolidate (Đúc kết / Reflection):</strong>
+    <ul>
+      <li>Biến chuỗi trải nghiệm rời rạc (Episodic) thành quy tắc tổng quát (Semantic).</li>
+      <li>Loại bỏ chi tiết vụn vặt, gộp các sự cố trùng lặp thành một bài học duy nhất.</li>
+    </ul>
+  </li>
+  <li><strong>Forget &amp; Evict (Vô hiệu hóa &amp; Quên):</strong>
+    <ul>
+      <li>Xóa hoặc cập nhật các mẩu nhớ đã hết hạn hoặc mâu thuẫn để chống "dirty read" trong context.</li>
+      <li>Quy tắc Phil Karlton: Cache Invalidation là một trong hai việc khó nhất trong Computer Science.</li>
+    </ul>
+  </li>
+</ol>
+
+<h2>Kiến trúc Index-Detail (mô hình của my-agent)</h2>
+<table>
+  <tr><th>Tầng</th><th>File</th><th>Nạp vào context</th><th>Vai trò</th></tr>
+  <tr>
+    <td><strong>Tầng 1 (Chỉ mục)</strong></td>
+    <td><code>memory/MEMORY.md</code></td>
+    <td>Luôn nạp sẵn ở đầu mọi phiên (~ vài chục token)</td>
+    <td>Mỗi dòng là một pointer trỏ đến file chi tiết kèm tóm tắt phủ định/khẳng định 10 từ.</td>
+  </tr>
+  <tr>
+    <td><strong>Tầng 2 (Chi tiết)</strong></td>
+    <td><code>memory/*.md</code></td>
+    <td>Chỉ nạp lười (lazy load) khi pointer ở Tầng 1 khớp yêu cầu</td>
+    <td>Frontmatter (name, description, type) + nội dung có <strong>ngày tháng tuyệt đối</strong> (YYYY-MM-DD).</td>
+  </tr>
+</table>
+
+<h2>So sánh các giải pháp lưu trữ</h2>
+<table>
+  <tr><th>Tiêu chí</th><th>Markdown Index (my-agent)</th><th>Vector DB (Chroma/Pinecone)</th><th>Auto-Memory (Claude Code IDE)</th></tr>
+  <tr><td>Hạ tầng</td><td>Không (0 dependency, chỉ là Git)</td><td>Cần service database + embedding model</td><td>Thư mục local riêng của harness</td></tr>
+  <tr><td>Phiên bản &amp; Diff</td><td><code>git diff</code>, <code>git blame</code>, commit rõ ràng</td><td>Khó theo dõi, phụ thuộc DB dump</td><td>File text local, không đồng bộ harness khác</td></tr>
+  <tr><td>Khả năng sửa tay</td><td>Dễ dàng bằng bất kỳ editor nào</td><td>Phải qua script/API query</td><td>Sửa được qua file local</td></tr>
+  <tr><td>Mở rộng quy mô</td><td>Tối đa vài trăm file (tránh index bloat)</td><td>Hàng triệu vector embeddings</td><td>Vài chục file markdown dự án</td></tr>
+  <tr><td>Tính đa nền tảng</td><td>Universal (Claude Code, Antigravity, ...)</td><td>Phải viết client riêng cho từng agent</td><td>Bị khóa vào harness Claude Code</td></tr>
+</table>
+
+<h2>Quy tắc thiết kế memory sạch</h2>
+<ul>
+  <li><strong>Ngày tháng luôn tuyệt đối:</strong> Viết <code>2026-10-24</code>, tuyệt đối không viết "hôm nay", "hôm qua", "tuần tới".</li>
+  <li><strong>Phân định rõ ranh giới với AGENTS.md:</strong>
+    <ul>
+      <li>Sự thật bất biến, quy ước bắt buộc cho cả team → đặt ở <code>AGENTS.md</code> / <code>CLAUDE.md</code>.</li>
+      <li>Sở thích cá nhân, mục tiêu tạm thời, ghi chú thay đổi theo thời gian → đặt ở <code>memory/</code>.</li>
+    </ul>
+  </li>
+  <li><strong>Chiến lược Update &gt; Insert:</strong> Khi có thông tin mới, luôn kiểm tra xem đã có ghi chú cũ liên quan chưa. Nếu có, cập nhật ghi đè (UPDATE) thay vì tạo file mới để tránh xung đột ngữ cảnh.</li>
+  <li><strong>Dọn dẹp định kỳ (Eviction):</strong> Thông tin đã hoàn thành hoặc không còn giá trị nên chuyển vào <code>memory/archive/</code> hoặc xóa hẳn.</li>
+</ul>
+
+</main>
+</body>
+</html>

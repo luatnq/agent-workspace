@@ -1,0 +1,273 @@
+/* LLM Foundation — shared stylesheet for lessons and reference docs.
+   Tufte-inspired: generous margins, serif body, sidenotes, restrained color. */
+
+:root {
+  --bg: #fffff8;
+  --fg: #111;
+  --muted: #555;
+  --rule: #ddd;
+  --accent: #a0522d;
+  --accent-soft: #f3e6df;
+  --ok: #2e7d32;
+  --ok-soft: #e8f5e9;
+  --bad: #c62828;
+  --bad-soft: #fdecea;
+  --code-bg: #f4f2ec;
+  --serif: "ET Book", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  --sans: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151515;
+    --fg: #e6e6e0;
+    --muted: #a8a8a0;
+    --rule: #333;
+    --accent: #e0956b;
+    --accent-soft: #2b201a;
+    --ok: #81c784;
+    --ok-soft: #1b2e1c;
+    --bad: #ef9a9a;
+    --bad-soft: #3a1c1c;
+    --code-bg: #222;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 17px; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--serif);
+  line-height: 1.55;
+  counter-reset: sidenote;
+}
+
+.page {
+  max-width: 46rem;
+  padding: 3rem 1.25rem 5rem;
+  margin: 0 auto;
+}
+
+/* ---- Typography ---- */
+h1, h2, h3 { font-weight: 400; line-height: 1.2; margin: 0; }
+h1 { font-size: 2.2rem; margin-bottom: .35rem; }
+h2 { font-size: 1.5rem; font-style: italic; margin-top: 2.8rem; margin-bottom: .8rem; }
+h3 { font-size: 1.15rem; font-style: italic; margin-top: 1.8rem; margin-bottom: .5rem; }
+p { margin: 0 0 1rem; }
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+a:hover { border-bottom-color: var(--accent); }
+strong { font-weight: 600; }
+em { font-style: italic; }
+ul, ol { padding-left: 1.4rem; margin: 0 0 1rem; }
+li { margin-bottom: .3rem; }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2rem 0; }
+blockquote {
+  margin: 1.4rem 0;
+  padding-left: 1.1rem;
+  border-left: 3px solid var(--rule);
+  font-style: italic;
+  color: var(--muted);
+}
+blockquote > :last-child { margin-bottom: 0; }
+code {
+  font-family: var(--mono);
+  font-size: .85em;
+  background: var(--code-bg);
+  padding: .1em .35em;
+  border-radius: 3px;
+}
+pre {
+  font-family: var(--mono);
+  font-size: .85rem;
+  background: var(--code-bg);
+  padding: .9rem 1rem;
+  overflow-x: auto;
+  border-radius: 4px;
+  margin: 0 0 1.2rem;
+  line-height: 1.45;
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+
+/* ---- Page header / meta ---- */
+.meta {
+  font-family: var(--sans);
+  font-size: .8rem;
+  color: var(--muted);
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  margin-bottom: 2.2rem;
+}
+.meta a { border: 0; }
+.subtitle { font-size: 1.25rem; font-style: italic; color: var(--muted); margin-bottom: 1rem; }
+
+/* ---- Callouts ---- */
+.callout {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  padding: .8rem 1rem;
+  margin: 1.4rem 0;
+  border-radius: 0 4px 4px 0;
+}
+.callout > :last-child { margin-bottom: 0; }
+.callout .label {
+  font-family: var(--sans);
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--accent);
+  display: block;
+  margin-bottom: .3rem;
+}
+
+/* ---- Sidenotes (Tufte) ---- */
+.sidenote-ref { counter-increment: sidenote; }
+.sidenote-ref::after {
+  content: counter(sidenote);
+  font-size: .7em;
+  vertical-align: super;
+  color: var(--accent);
+  margin-left: .1em;
+}
+.sidenote {
+  font-family: var(--sans);
+  font-size: .78rem;
+  color: var(--muted);
+  line-height: 1.4;
+  margin: .4rem 0 1rem 1.5rem;
+  padding-left: .8rem;
+  border-left: 2px solid var(--rule);
+}
+.sidenote::before {
+  content: counter(sidenote) " ";
+  color: var(--accent);
+}
+@media (min-width: 1100px) {
+  /* Reserve a right gutter so floated sidenotes never overflow the viewport. */
+  .page { position: relative; max-width: 65rem; padding-right: 19rem; }
+  .sidenote {
+    float: right;
+    clear: right;
+    width: 15rem;
+    margin: 0 -18rem 1rem 0;
+    padding-left: 0;
+    border: 0;
+  }
+}
+
+/* ---- Tables ---- */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 1.4rem;
+  font-size: .92rem;
+}
+th, td {
+  text-align: left;
+  padding: .45rem .6rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+th {
+  font-family: var(--sans);
+  font-size: .75rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  border-bottom: 2px solid var(--rule);
+}
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---- Details / reveal ---- */
+details {
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: .6rem .9rem;
+  margin: 0 0 1.2rem;
+}
+details summary {
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: .9rem;
+  font-weight: 600;
+}
+details[open] summary { margin-bottom: .6rem; }
+
+/* ---- Quiz component (see quiz.js) ---- */
+.quiz {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 1rem 1.1rem;
+  margin: 1.6rem 0;
+  font-family: var(--sans);
+  font-size: .95rem;
+}
+.quiz-q { font-weight: 600; margin-bottom: .7rem; }
+.quiz-options { list-style: none; padding: 0; margin: 0; }
+.quiz-options li {
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: .5rem .8rem;
+  margin-bottom: .45rem;
+  cursor: pointer;
+  transition: background .12s;
+}
+.quiz-options li:hover { background: var(--code-bg); }
+.quiz.answered .quiz-options li { cursor: default; }
+.quiz.answered .quiz-options li:hover { background: transparent; }
+.quiz-options li.is-correct { background: var(--ok-soft); border-color: var(--ok); }
+.quiz-options li.is-wrong { background: var(--bad-soft); border-color: var(--bad); }
+.quiz-explain {
+  display: none;
+  margin-top: .8rem;
+  padding-top: .8rem;
+  border-top: 1px dashed var(--rule);
+  font-size: .9rem;
+  color: var(--muted);
+}
+.quiz.answered .quiz-explain { display: block; }
+.quiz-verdict {
+  display: none;
+  font-weight: 600;
+  margin-top: .6rem;
+}
+.quiz.answered .quiz-verdict { display: block; }
+.quiz.answered.correct .quiz-verdict { color: var(--ok); }
+.quiz.answered.wrong .quiz-verdict { color: var(--bad); }
+.quiz-score {
+  font-family: var(--sans);
+  font-size: .9rem;
+  color: var(--muted);
+  margin: 1rem 0 2rem;
+}
+
+/* ---- Nav / footer ---- */
+.lesson-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-family: var(--sans);
+  font-size: .85rem;
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+}
+.lesson-nav a { border: 0; }
+.lesson-nav .disabled { color: var(--muted); }
+
+/* ---- Print ---- */
+@media print {
+  :root { --bg: #fff; --fg: #000; }
+  html { font-size: 11pt; }
+  .page { max-width: none; padding: 0; }
+  a { color: inherit; border: 0; }
+  .quiz, .lesson-nav, .no-print { display: none; }
+  details { border: 0; padding: 0; }
+  details summary { display: none; }
+  details > * { display: block; }
+  h2 { page-break-after: avoid; }
+}

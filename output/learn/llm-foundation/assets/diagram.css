@@ -1,0 +1,84 @@
+/* LLM Foundation — shared diagram styles (inline SVG + Mermaid).
+ *
+ * Markup contract:
+ *
+ *   <figure class="diagram">
+ *     <svg viewBox="0 0 W H" role="img" aria-label="...">...</svg>   (or <pre class="mermaid">...</pre>)
+ *     <figcaption>Hình N. What to look at, in one or two sentences.</figcaption>
+ *   </figure>
+ *
+ * Inline SVG never hard-codes colors: use the classes below, which read the
+ * tokens in styles.css, so diagrams follow light/dark mode and print cleanly.
+ */
+
+figure.diagram {
+  margin: 1.6rem 0 1.8rem;
+}
+figure.diagram svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+figure.diagram figcaption {
+  font-family: var(--sans);
+  font-size: .78rem;
+  color: var(--muted);
+  line-height: 1.4;
+  margin-top: .6rem;
+}
+
+/* ---- Inline SVG primitives ---- */
+.diagram text {
+  font-family: var(--sans);
+  font-size: 13px;
+  fill: var(--fg);
+}
+.diagram text.d-muted  { fill: var(--muted); font-size: 11.5px; }
+.diagram text.d-small  { font-size: 11.5px; }
+.diagram text.d-strong { font-weight: 600; }
+.diagram text.d-accent { fill: var(--accent); }
+.diagram text.d-bad    { fill: var(--bad); }
+.diagram text.d-ok     { fill: var(--ok); }
+.diagram text.d-center { text-anchor: middle; }
+.diagram text.d-end    { text-anchor: end; }
+
+.diagram .d-box     { fill: var(--bg);          stroke: var(--fg);     stroke-width: 1.2; }
+.diagram .d-fill    { fill: var(--code-bg);     stroke: var(--muted);  stroke-width: 1; }
+.diagram .d-accent-fill { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+.diagram .d-ok-fill { fill: var(--ok-soft);     stroke: var(--ok);     stroke-width: 1.2; }
+.diagram .d-bad-fill{ fill: var(--bad-soft);    stroke: var(--bad);    stroke-width: 1.2; }
+.diagram .d-reserve { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+
+.diagram .d-line    { stroke: var(--muted); stroke-width: 1.2; fill: none; }
+.diagram .d-rule    { stroke: var(--rule);  stroke-width: 1; fill: none; }
+.diagram .d-arrow   { stroke: var(--fg);    stroke-width: 1.3; fill: none; marker-end: url(#d-arrowhead); }
+.diagram .d-arrow-accent { stroke: var(--accent); stroke-width: 1.5; fill: none; marker-end: url(#d-arrowhead-accent); }
+.diagram .d-arrowhead { fill: var(--fg); }
+.diagram .d-arrowhead-accent { fill: var(--accent); }
+
+/* ---- Mermaid ---- */
+figure.diagram pre.mermaid {
+  background: none;
+  padding: 0;
+  text-align: center;
+  font-family: var(--sans);
+}
+/* Before render (or offline): show the source as a readable fallback. */
+figure.diagram pre.mermaid:not([data-processed]) {
+  text-align: left;
+  background: var(--code-bg);
+  padding: .9rem 1rem;
+  font-family: var(--mono);
+  font-size: .8rem;
+  white-space: pre-wrap;
+}
+figure.diagram .diagram-offline {
+  font-family: var(--sans);
+  font-size: .75rem;
+  color: var(--muted);
+}
+
+@media print {
+  figure.diagram { break-inside: avoid; }
+}

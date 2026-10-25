@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glossary — LLM Foundation</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">LLM Foundation · Glossary · cập nhật 2026-09-26</p>
+
+<h1>Glossary</h1>
+<p class="subtitle">Ngôn ngữ chuẩn của workspace này. Một thuật ngữ chỉ vào đây khi Luật đã dùng đúng nó (qua quiz hoặc trao đổi). Mọi bài học và learning record dùng đúng từ trong đây.</p>
+
+<p class="callout"><span class="label">Quy ước</span>Thuật ngữ giữ tiếng Anh. Định nghĩa nói thứ đó <em>là gì</em>, không phải làm thế nào. Dòng <em>Tránh</em> liệt kê cách gọi lỏng lẻo không dùng trong workspace.</p>
+
+<h2>Đơn vị và giới hạn</h2>
+
+<p><strong>Token</strong>:<br>
+Đơn vị nhỏ nhất model xử lý và cũng là đơn vị tính giá, giới hạn, tốc độ; xấp xỉ 4 ký tự / 0.75 từ tiếng Anh, thay đổi theo ngôn ngữ và theo tokenizer của từng thế hệ model.<br>
+<em>Tránh</em>: từ, ký tự, "chữ".</p>
+
+<p><strong>Context window</strong>:<br>
+Working memory của model trong một lần gọi: toàn bộ token model nhìn thấy, gồm system prompt, messages, tool definitions, tool results, thinking và output của lượt hiện tại. Khác với kiến thức trong trọng số (vague recollection).<br>
+<em>Tránh</em>: "bộ nhớ của model", "model nhớ".</p>
+
+<p><strong>Context rot</strong>:<br>
+Hiện tượng accuracy và recall giảm khi số token trong context tăng. Hệ quả: dung lượng window là trần, không phải mục tiêu.<br>
+<em>Tránh</em>: "model bị quá tải".</p>
+
+<p><strong>Stateless call</strong>:<br>
+Tính chất của một lệnh gọi LLM: không có state phía server; mỗi lượt gửi lại toàn bộ lịch sử. "Memory" là trách nhiệm của app.<br>
+<em>Tránh</em>: session, "cuộc hội thoại" khi nói về API.</p>
+
+<h2>Cost và latency</h2>
+
+<p><strong>Thinking tokens</strong>:<br>
+Token model sinh ra để suy luận trước khi trả lời; tính giá như output và cộng vào latency như output.<br>
+<em>Tránh</em>: "suy nghĩ miễn phí", "reasoning ẩn".</p>
+
+<p><strong>TTFT (time to first token)</strong>:<br>
+Thời gian từ lúc gửi prompt đến token output đầu tiên; tăng theo độ dài input, giảm khi cache hit. Phần còn lại của latency tỉ lệ với số output token.<br>
+<em>Tránh</em>: "latency" chung chung khi ý nói riêng phần đọc prompt.</p>
+
+<p><strong>Prompt caching</strong>:<br>
+Tái dùng prefix request (thứ tự tools → system → messages) đã xử lý trong một TTL (5 phút hoặc 1 giờ, mỗi hit refresh TTL); write tính 1.25× / 2× giá input, read tính 0.1× với phần lớn model (0.05× Opus 5.5, 0.025× Fable 5.1). Hoà vốn khi có ≥1 hit trong TTL 5m hoặc ≥2 hit trong TTL 1h; prefix phải giống hệt từng byte.<br>
+<em>Tránh</em>: "cache response", "cache kết quả".</p>
+
+<p><strong>Temperature</strong>:<br>
+Tham số điều khiển độ ngẫu nhiên khi chọn token; 0 là ít ngẫu nhiên nhất nhưng <em>không</em> đảm bảo deterministic giữa các lần gọi.<br>
+<em>Tránh</em>: "chế độ deterministic".</p>
+
+<h2>Hành vi của model</h2>
+
+<p><strong>Hallucination</strong>:<br>
+Output nghe hợp lý nhưng sai hoặc không có căn cứ; sinh ra tự nhiên từ pretraining (tối ưu cho "hợp lý", không phải "đúng") và dai dẳng vì eval thưởng đoán mò hơn abstain. Không sửa được tận gốc bằng prompt.<br>
+<em>Tránh</em>: "model nói dối", "bug của model".</p>
+
+<p><strong>Grounding</strong>:<br>
+Đưa nguồn sự thật vào context (tài liệu, kết quả tool) và yêu cầu model trả lời dựa trên nó, có trích dẫn; mitigation tầng kiến trúc, khác băng dán tầng prompt.<br>
+<em>Tránh</em>: "cho model học thêm", "train lại".</p>
+
+<p><strong>Abstain</strong>:<br>
+Hành vi model từ chối trả lời ("không đủ thông tin") thay vì đoán; chỉ xuất hiện đều khi prompt cho phép và eval không phạt nó.<br>
+<em>Tránh</em>: "model lười", "refuse".</p>
+
+<h2>Tool use</h2>
+
+<p><strong>Tool-use loop</strong>:<br>
+Vòng lặp do app sở hữu: gọi model → nhận <code>tool_use</code> block → app thực thi → trả <code>tool_result</code> trong message user → gọi lại, cho đến khi <code>stop_reason</code> khác <code>tool_use</code>. Model chỉ sinh yêu cầu; quyền thực thi và guard (số vòng, ngân sách, confirm) nằm ở app.<br>
+<em>Tránh</em>: "model gọi API", "model chạy tool".</p>
+
+<p><strong>Tool result</strong>:<br>
+Block kết quả app trả về cho một <code>tool_use</code>, bắt buộc có (kể cả khi lỗi, với <code>is_error</code>), nằm ngay message kế tiếp và trước mọi text; là input không tin cậy và là thứ phình context nhanh nhất.<br>
+<em>Tránh</em>: "response của tool", "output của function".</p>
+
+<p><strong>Indirect prompt injection</strong>:<br>
+Câu lệnh nhắm vào model được giấu trong dữ liệu model đọc qua tool result (trang web, email, file); hàng rào cuối phải nằm ở app, không nằm ở prompt.<br>
+<em>Tránh</em>: "jailbreak" (đó là user cố tình tấn công trực tiếp).</p>
+
+<h2>Kiến trúc</h2>
+
+<p><strong>Workflow</strong>:<br>
+Hệ thống LLM mà code cầm control flow: các bước và thứ tự gọi model đã định trước (chaining, routing, parallelization, orchestrator-workers, evaluator-optimizer).<br>
+<em>Tránh</em>: "pipeline AI", "agent" khi các bước đã cố định.</p>
+
+<p><strong>Agent</strong>:<br>
+Hệ thống LLM mà model cầm control flow: một tool-use loop chạy tới khi model tự dừng, số bước không đoán trước được. Chỉ đáng dùng khi không biết trước số bước và môi trường trả được ground truth.<br>
+<em>Tránh</em>: "bot", "AI tự động", "agent" cho mọi thứ có gọi LLM.</p>
+
+<h2>Eval</h2>
+
+<p><strong>LLM-as-judge</strong>:<br>
+Dùng một model để chấm output của model khác theo rubric; là cách nhân rộng việc chấm của người ở tầng L2. Nên dùng model khác với model sinh output.<br>
+<em>Tránh</em>: "AI tự đánh giá", "auto-score".</p>
+
+<p><strong>Agreement</strong>:<br>
+Tỉ lệ khớp giữa điểm của LLM-as-judge và điểm của người trên cùng một bộ ví dụ (25–50 ví dụ ở Rechat). Phải đo trước khi tin judge và đo lại định kỳ.<br>
+<em>Tránh</em>: "độ chính xác của judge" khi chưa nói rõ so với ai.</p>
+
+<nav class="lesson-nav">
+  <a href="token-economics.html">← Cheat sheet: Token economics</a>
+  <a href="../lessons/0007-context-engineering-va-prompt-caching.html">Bài 7 →</a>
+</nav>
+
+</main>
+</body>
+</html>

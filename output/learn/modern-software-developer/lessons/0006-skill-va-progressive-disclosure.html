@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 6 — Skill và progressive disclosure</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0006 · Module 3 (CS146S W3) · 2026-10-13 · ~40 phút · <a href="0005-thiet-ke-tool-cho-agent.html">Bài 5</a> · <a href="../reference/skills.html">Cheat sheet skill</a> · <a href="../reference/tool-design.html">Thiết kế tool</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Skill: đóng gói quy trình, nạp khi cần</h1>
+<p class="subtitle">Bài 5 trao cho agent <em>năng lực</em>: một tool gọi được. Bài này trao cho nó <em>cách làm</em>: một quy trình, một checklist, vài script. Anh đã viết 9 skill trong my-agent. Hôm nay ta đo xem chúng tốn bao nhiêu context, model có thật sự gọi chúng không, và skill nào đang "vô hình".</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Giải thích ba tầng nạp của skill và chi phí của từng tầng. Chọn đúng chỗ cho một mẩu chỉ dẫn: CLAUDE.md, skill, hook hay MCP tool. Audit bộ skill của my-agent bằng số đo thật, và chạy một trigger eval an toàn để biết description có làm việc hay không.</p>
+</div>
+
+<h2>0. Khởi động</h2>
+<p>Một câu ôn bài 5, và một câu đoán trước. Đáp án câu đoán nằm ở mục 3.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Bài 4 và bài 5 chưa có kết quả, nên câu ôn chọn ý quan trọng nhất của bài 5 mà mục 3 hôm nay sẽ dùng lại: thông tin model cần phải nằm ở chỗ model đã đọc sẵn.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Tool tra tiến độ học có tham số <code>topic_slug</code>, chỉ có 3 giá trị và hiếm khi đổi. Ở bài 5, thiết kế nào giúp model gọi đúng ngay lần đầu với ít lần gọi nhất?</p>
+  <ul class="quiz-options">
+    <li data-correct>Đưa slug vào schema dạng enum, kèm tên khóa trong description</li>
+    <li>Thêm tool list_topics và dặn model luôn gọi tool đó trước</li>
+    <li>Giữ string tự do, message lỗi liệt kê slug hợp lệ</li>
+    <li>Đổi tham số thành topic, bỏ phần mô tả cho gọn</li>
+  </ul>
+  <p class="quiz-explain">Bản v3 ở bài 5: 7 lần gọi cho 6 phiên, 0 lỗi. Bản thêm <code>list_topics</code> hết lỗi nhưng tốn 13 lần gọi vì luôn phải khám phá trước. Bản dựa vào message lỗi tốn 12 lần gọi, 4 lỗi. Thông tin đặt sẵn trong description và schema là thứ model đọc "miễn phí". Hôm nay, description của skill đóng đúng vai đó.</p>
+</div>
+
+<details>
+  <summary>Đoán trước: tôi gửi 9 câu cho Claude Code trong my-agent, mỗi câu nhắm một skill của anh (remember, research, review-java, brainstorm, po, report, teach, skill-creator) và một câu không cần skill nào. Skill nào bị bỏ qua nhiều nhất, và vì sao? Viết ra rồi mới mở.</summary>
+  <p>Giữ câu trả lời của anh. Mục 3 có kết quả thật.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Skill là gì: một bộ tài liệu onboarding được nạp lười</h2>
+
+<p>Trước hết là một ví dụ anh đã có sẵn. Skill <code>review-java</code> của anh gồm một file <code>SKILL.md</code> 114 dòng và 13 file khác: checklist transaction, concurrency, Oracle SQL… Khi anh nói "review đoạn code này", agent đọc <code>SKILL.md</code>, thấy đoạn code có <code>@Transactional</code>, rồi mới mở checklist transaction. Checklist Oracle thì không mở.</p>
+
+<p>Anthropic định nghĩa skill đúng như vậy: <em>"organized folders of instructions, scripts, and resources"</em> (tạm dịch: "thư mục được sắp xếp, chứa chỉ dẫn, script và tài nguyên").<span class="sidenote-ref"></span> Họ ví nó với <em>"putting together an onboarding guide for a new hire"</em> (tạm dịch: "soạn tài liệu onboarding cho một nhân viên mới").</p>
+<aside class="sidenote">Barry Zhang, Keith Lazuka, Mahesh Murag, <a href="https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills">"Equipping agents for the real world with Agent Skills"</a>, Anthropic, 2025-10-16. Ngày 2025-12-18, Agent Skills được công bố thành <a href="https://agentskills.io/specification">chuẩn mở</a>.</aside>
+
+<p>Với dân Spring, có một phép so sánh sát hơn: <strong>lazy loading của JPA</strong>. Entity <code>Order</code> được nạp ngay, còn <code>order.getItems()</code> chỉ là proxy, chạm vào mới query. Skill cũng vậy: tên và description được nạp ngay, thân skill chỉ nạp khi cần.</p>
+
+<p>Phép so sánh hỏng ở hai chỗ, và cả hai đều quan trọng:</p>
+<ul>
+  <li><strong>Ai quyết định "chạm vào"?</strong> Với JPA là code của anh, tất định. Với skill là model, và nó chỉ dựa vào description. Description dở thì skill không bao giờ được nạp (mục 3).</li>
+  <li><strong>Không có evict.</strong> Khi đã nạp, thân skill <em>"enters the conversation as a single message and stays there across later turns"</em> (tạm dịch: "đi vào hội thoại thành một message và nằm đó qua các lượt sau").<span class="sidenote-ref"></span> Claude Code không đọc lại file. Sau compaction, mỗi skill chỉ được gắn lại 5.000 token đầu, và tất cả cùng chia ngân sách 25.000 token.</li>
+</ul>
+<aside class="sidenote"><a href="https://code.claude.com/docs/en/skills">Claude Code — Skills</a>, mục "Skill content lifecycle". Hệ quả: chỉ dẫn quan trọng nhất phải nằm ở đầu <code>SKILL.md</code>.</aside>
+
+<p><strong>Điều cần nhớ:</strong> skill là một thư mục chỉ dẫn + script + tài liệu, nạp lười theo quyết định của model. Description là thứ duy nhất model thấy trước khi quyết định. Đã nạp thì skill nằm lại trong context tới khi compaction.</p>
+
+<h2>2. Ba tầng nạp, và context của anh đang tiêu vào đâu</h2>
+
+<p>Cơ chế này có tên là <strong>progressive disclosure</strong>, tức là "lộ dần": chỉ đưa vào context phần chi tiết mà việc hiện tại cần. Chuẩn mở Agent Skills chia ba tầng:</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+  subgraph L1["Tầng 1 — metadata: luôn nằm trong context"]
+    direction LR
+    A["name + description<br/>của mọi skill<br/>~100 token / skill"]
+  end
+  subgraph L2["Tầng 2 — thân SKILL.md: khi model gọi Skill"]
+    direction LR
+    B["chỉ dẫn, quy trình<br/>khuyến nghị dưới 5.000 token<br/>dưới 500 dòng"]
+  end
+  subgraph L3["Tầng 3 — tài nguyên: khi chỉ dẫn bảo cần"]
+    direction LR
+    C["references/*.md<br/>đọc bằng Read"] ~~~ D["scripts/*.py<br/>chạy bằng Bash,<br/>chỉ output vào context"]
+  end
+  L1 -->|"model thấy description khớp"| L2
+  L2 -->|"chỉ dẫn trỏ tới file"| L3
+</pre>
+<figcaption>Hình 1. Ba tầng nạp của skill. Nhìn vào ô cuối: script không bị đọc vào context, chỉ output của nó được đưa vào. Một script 300 dòng chỉ tốn vài dòng kết quả. Số liệu: <a href="https://agentskills.io/specification">Agent Skills specification</a>, mục "Progressive disclosure".</figcaption>
+</figure>
+
+<p>Đến đây anh có thể tự hỏi: tầng 1 "luôn nằm trong context" thì tốn bao nhiêu thật? Tôi chạy <code>claude -p "/context"</code> trong my-agent hôm nay để xem:</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 640 150" role="img" aria-label="Context lúc bắt đầu phiên trong my-agent: 26.2 nghìn token, gồm 7.3 nghìn system prompt, tool, agent và message; 11.1 nghìn memory files; 7.8 nghìn skill listing">
+  <text x="0" y="14" class="d-muted">Context lúc bắt đầu phiên trong my-agent, 26,2k token (Claude Code 2.1.296, 2026-10-13)</text>
+  <rect x="0" y="40" width="146" height="34" class="d-box"/>
+  <rect x="146" y="40" width="222" height="34" class="d-fill"/>
+  <rect x="368" y="40" width="156" height="34" class="d-accent-fill"/>
+  <text x="73" y="62" class="d-small d-center">khác 7,3k</text>
+  <text x="257" y="62" class="d-small d-center">memory files 11,1k</text>
+  <text x="446" y="62" class="d-small d-center d-strong">skill listing 7,8k</text>
+  <text x="0" y="96" class="d-muted">khác = system prompt 2,2k + system tools 2,8k + custom agents 1k + messages 1,3k</text>
+  <text x="146" y="114" class="d-muted">CLAUDE.md, AGENTS.md, context/, MEMORY.md…</text>
+  <text x="368" y="132" class="d-muted">tên + description của ~90 skill</text>
+  <text x="0" y="148" class="d-muted">Thang: 20 px = 1k token. Không tính tool và MCP ở chế độ deferred (nạp qua ToolSearch).</text>
+</svg>
+<figcaption>Hình 2. Nhìn hai khối bên phải. Mô tả của khoảng 90 skill (của anh, của plugin OMC, superpowers, built-in, đồng bộ từ claude.ai) tốn <em>ít hơn</em> riêng phần file instruction. Lý do là skill chỉ trả tiền cho description, còn CLAUDE.md trả tiền cho toàn bộ nội dung, ở mọi phiên. Đó là lý do tài liệu Claude Code khuyên chuyển một mục CLAUDE.md sang skill khi nó đọc giống quy trình hơn là sự thật.</figcaption>
+</figure>
+
+<p>Ngân sách cho tầng 1 có giới hạn cứng, và anh nên biết ba con số:</p>
+<ul>
+  <li>Mỗi description (cộng <code>when_to_use</code>) bị cắt ở <strong>1.536 ký tự</strong> trong listing.</li>
+  <li>Cả listing có ngân sách bằng <strong>1% context window</strong> của model. Vượt ngân sách thì Claude Code bỏ description của các skill <em>ít được gọi nhất</em> trước, chỉ giữ lại tên. Mất description thì mất từ khóa để khớp.</li>
+  <li>Thân <code>SKILL.md</code> nên dưới <strong>500 dòng</strong>. Tài liệu tham chiếu chỉ nên sâu <strong>một tầng</strong> tính từ <code>SKILL.md</code>, vì file bị trỏ lồng nhau có thể chỉ được đọc lướt bằng <code>head -100</code>.<span class="sidenote-ref"></span></li>
+</ul>
+<aside class="sidenote"><a href="https://code.claude.com/docs/en/skills">Claude Code — Skills</a>, mục "Skill descriptions are cut short". <a href="https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices">Skill authoring best practices</a>, mục "Avoid deeply nested references". Lệnh <code>/doctor</code> cho ước lượng chi phí listing; <code>/skill-doctor</code> tìm skill không dùng.</aside>
+
+<p><strong>Điều cần nhớ:</strong> description của mọi skill luôn nằm trong context, nhưng rẻ: khoảng 90 skill tốn 7,8k token trên máy anh. Thân skill chỉ tốn khi được gọi, còn script thì chỉ tốn phần output. Muốn đặt một quy trình dài vào agent, skill rẻ hơn CLAUDE.md.</p>
+
+<h2>3. Description quyết định skill có được gọi hay không</h2>
+
+<p>Bài 5 kết luận rằng description của tool là giao diện mà model đọc. Với skill còn gắt hơn: <strong>description là thứ duy nhất</strong> model có để quyết định nạp. Best practices của Anthropic nói rõ: description phải nói skill <em>làm gì</em> và <em>khi nào dùng</em>, viết ở ngôi thứ ba, và chứa từ khóa người dùng hay nói.</p>
+
+<p>Giờ quay lại câu đoán ở mục 0. Tôi gửi 9 câu hỏi, mỗi câu 2 lần, cho Claude Code chạy trong my-agent. Mỗi phiên chỉ còn một built-in tool là <code>Skill</code>, và ta chỉ đo một việc: lượt đầu, model có gọi đúng skill không. (Về sau tôi mới phát hiện phiên vẫn còn tool MCP; xem khung bên dưới.)</p>
+
+<table>
+  <tr><th>Câu hỏi (rút gọn)</th><th>Skill nhắm tới</th><th>Gọi đúng</th><th>Ghi chú</th></tr>
+  <tr><td>"Nhớ giúp tôi là tôi thích Gradle…"</td><td>remember</td><td>2/2</td><td></td></tr>
+  <tr><td>"Đang bí cách tổ chức on-call…"</td><td>brainstorm</td><td>2/2</td><td>description 813 ký tự</td></tr>
+  <tr><td>"App chi tiêu nên thêm chức năng gì…"</td><td>po</td><td>2/2</td><td>description 727 ký tự</td></tr>
+  <tr><td>"Tổng kết công việc tuần này"</td><td>report</td><td>2/2</td><td></td></tr>
+  <tr><td>"Tạo skill mới để review SQL Oracle"</td><td>skill-creator</td><td>2/2</td><td>chọn bản project, không chọn bản đồng bộ từ claude.ai</td></tr>
+  <tr><td>"Đoạn <code>@Transactional</code> này có vấn đề không"</td><td>review-java</td><td>1/2</td><td>lần kia tự trả lời (đúng: dual-write)</td></tr>
+  <tr><td>"So sánh Kafka và RabbitMQ cho thanh toán"</td><td>research</td><td><strong>0/2</strong></td><td>tự trả lời từ kiến thức; description 198 ký tự</td></tr>
+  <tr><td>"Dạy tôi Kafka, học qua nhiều buổi"</td><td>teach</td><td><strong>0/2</strong></td><td>không có trong listing (xem dưới)</td></tr>
+  <tr><td>"Viết hàm Java đảo ngược chuỗi"</td><td>(không skill)</td><td>2/2 không gọi</td><td>đúng</td></tr>
+</table>
+<p class="small">Claude Code 2.1.296, model mặc định, 2026-10-13. n = 2 cho mỗi câu, chỉ đủ để thấy hướng. Bảng đầy đủ nằm trong <a href="../reference/skills.html">cheat sheet</a>.</p>
+
+<p>Có hai chuyện đáng học ở đây.</p>
+
+<p><strong>(1) <code>research</code> bị bỏ qua dù khớp nghĩa.</strong> Description có cụm "so sánh lựa chọn kỹ thuật", và câu hỏi đúng là so sánh. Nhưng model thấy mình tự trả lời được, nên không gọi. Đây là hiện tượng đã được ghi nhận. Chính skill <code>skill-creator</code> trong repo của anh viết: <em>"currently Claude has a tendency to 'undertrigger' skills -- to not use them when they'd be useful. To combat this, please make the skill descriptions a little bit 'pushy'"</em> (tạm dịch: "hiện Claude có xu hướng gọi skill ít hơn mức nên gọi, tức là bỏ qua cả khi skill có ích. Để chống lại, hãy viết description hơi 'nài nỉ' một chút"). Để ý ba skill được gọi đều đặn (<code>brainstorm</code>, <code>po</code>, <code>review-java</code>) đều có description dài kèm câu kiểu "kể cả khi tôi chỉ nói…". <code>research</code> thì không có.</p>
+
+<p><strong>(2) <code>teach</code> vô hình theo thiết kế.</strong> <code>SKILL.md</code> của nó có <code>disable-model-invocation: true</code>. Cờ này đưa skill ra khỏi listing: model không biết nó tồn tại, chỉ anh gõ <code>/teach</code> mới chạy. Chính phiên này cũng vậy: anh gõ "hãy tiếp tục tạo lesson", tôi không thấy <code>teach</code> trong danh sách skill, nên phải tự mở file đọc. Đó là một trade-off hợp lý (một skill nặng 230 dòng, tạo file, không nên tự bật), nhưng anh nên chọn nó một cách có chủ đích.</p>
+
+<p>Nhiều người nghĩ viết skill xong là agent sẽ dùng. Thật ra skill chưa được đo trigger thì chưa biết có chạy hay không, giống tool chưa qua eval ở bài 5.</p>
+
+<p><strong>Điều cần nhớ:</strong> description là điều kiện kích hoạt duy nhất của skill. Model có xu hướng bỏ qua skill khi nó tự tin trả lời được, nên description phải nêu tình huống cụ thể, kể cả cách nói tắt. <code>disable-model-invocation</code> làm skill vô hình với model; dùng khi muốn chỉ người gọi.</p>
+
+<div class="callout">
+  <span class="label">Chuyện xảy ra khi tôi chạy eval này</span>
+  <p>Lần chạy đầu tiên, tôi dùng <code>claude -p … --allowedTools "Skill"</code> và tưởng thế là phiên chỉ còn tool Skill. Sai. Máy anh để <code>defaultMode: "auto"</code>, và <code>--allowedTools</code> chỉ <em>duyệt trước</em> các tool đó, không <em>gỡ</em> tool khác. Câu "nhớ giúp tôi là tôi thích Gradle" đã chạy skill <code>remember</code> và <strong>ghi thật</strong> vào <code>memory/</code>, hai lần. Tôi đã xóa file đó và khôi phục <code>MEMORY.md</code>.</p>
+  <p>Lần hai, tôi dùng <code>--tools "Skill"</code>. Built-in tool biến mất, nhưng tool MCP của plugin OMC vẫn còn, trong đó có <code>python_repl</code>, tức là chạy code tùy ý. Model dùng nó để đọc thư mục (may là chỉ đọc). Chỉ đến <code>--tools "Skill" --strict-mcp-config</code>, event <code>init</code> mới báo đúng <code>"tools":["Skill"]</code>.</p>
+  <p>Bài học: harness để chạy eval cũng cần sandbox, và phải <em>kiểm tra</em> danh sách tool thật trong event <code>init</code>, không đoán theo tên cờ. Ta sẽ quay lại ở bài 9 (hook, permission) và bài 15 (threat model).</p>
+</div>
+
+<h2>4. Đặt chỉ dẫn vào đâu: CLAUDE.md, skill, hook hay tool</h2>
+
+<p>Giờ anh có bốn chỗ để đưa tri thức vào agent. Câu hỏi để chọn không phải "cái nào mạnh hơn" mà là: <em>khi nào nó cần có mặt</em>, và <em>có được phép bị bỏ qua không</em>.</p>
+
+<table>
+  <tr><th>Loại chỉ dẫn</th><th>Đặt ở</th><th>Vì sao</th></tr>
+  <tr><td>Sự thật cần ở mọi phiên (quy ước repo, lệnh build)</td><td>CLAUDE.md / AGENTS.md</td><td>Luôn nạp. Nhưng trả tiền ở mọi phiên, nên phải ngắn.</td></tr>
+  <tr><td>Quy trình chỉ cần thỉnh thoảng (review, viết báo cáo, release)</td><td>Skill</td><td>Chỉ tốn description cho tới khi dùng.</td></tr>
+  <tr><td>Luật <strong>không được</strong> bỏ qua (chạy test sau mỗi edit, cấm sửa file migration)</td><td>Hook</td><td>Harness chạy, không phụ thuộc model nhớ. Tài liệu: <em>"Claude skipped a rule that must hold every time: move the rule into a hook"</em> (tạm dịch: "Claude bỏ qua một luật phải luôn đúng: chuyển luật đó sang hook").</td></tr>
+  <tr><td>Năng lực chạm hệ thống ngoài (Jira, DB, API nội bộ)</td><td>MCP tool</td><td>Bài 4–5. Skill có thể <em>hướng dẫn cách dùng</em> tool đó.</td></tr>
+  <tr><td>Bước tất định, dễ sai nếu model tự viết (validate, parse, format)</td><td>Script trong skill</td><td><em>"code is deterministic"</em> (tạm dịch: "code thì tất định"), và script không tốn context.</td></tr>
+</table>
+
+<p>Trong một skill, best practices còn chia độ tự do theo độ "mong manh" của việc. Hình ảnh của họ: <em>"Narrow bridge with cliffs on both sides"</em> (tạm dịch: "cây cầu hẹp, hai bên là vực") thì đưa lệnh chính xác, kiểu "chạy đúng script này, không thêm cờ". <em>"Open field with no hazards"</em> (tạm dịch: "cánh đồng trống, không chướng ngại") thì chỉ cho hướng và để model tự chọn. Migration database là cây cầu. Code review là cánh đồng.</p>
+
+<p><strong>Điều cần nhớ:</strong> sự thật luôn cần → CLAUDE.md; quy trình thỉnh thoảng cần → skill; luật bắt buộc → hook; năng lực bên ngoài → MCP tool; bước tất định → script. Việc càng mong manh, chỉ dẫn càng chặt.</p>
+
+<h2>5. Thực hành: audit bộ skill của my-agent (~20 phút)</h2>
+
+<p>Tôi đã đo sẵn phần cơ học. Việc của anh là phần phán đoán.</p>
+
+<table>
+  <tr><th>Skill</th><th>Dòng SKILL.md</th><th>Ký tự description</th><th>File phụ</th><th>Script</th><th>Frontmatter</th></tr>
+  <tr><td>brainstorm</td><td>168</td><td>813</td><td>2</td><td>0</td><td>name, description, argument-hint</td></tr>
+  <tr><td>cv-review</td><td>106</td><td>435</td><td>6</td><td>0</td><td>name, description, argument-hint</td></tr>
+  <tr><td>po</td><td>94</td><td>727</td><td>3</td><td>0</td><td>name, description, argument-hint</td></tr>
+  <tr><td>remember</td><td>29</td><td>161</td><td>0</td><td>0</td><td>name, description, argument-hint</td></tr>
+  <tr><td>report</td><td>25</td><td>147</td><td>0</td><td>0</td><td>name, description, argument-hint</td></tr>
+  <tr><td>research</td><td>20</td><td>198</td><td>0</td><td>0</td><td>name, description, argument-hint</td></tr>
+  <tr><td>review-java</td><td>114</td><td>813</td><td>13</td><td>0</td><td>name, description</td></tr>
+  <tr><td>skill-creator</td><td>485</td><td>319</td><td>17</td><td>10</td><td>name, description</td></tr>
+  <tr><td>teach</td><td>230</td><td>61</td><td>5</td><td>0</td><td>name, description, <strong>disable-model-invocation</strong>, argument-hint</td></tr>
+</table>
+<p class="small">Đo 2026-10-13 bằng <code>wc -l</code> và awk trên <code>.claude/skills/*/SKILL.md</code>. Chuẩn mở chỉ định nghĩa 6 trường: <code>name</code>, <code>description</code>, <code>license</code>, <code>compatibility</code>, <code>metadata</code>, <code>allowed-tools</code>. <code>argument-hint</code> và <code>disable-model-invocation</code> là trường riêng của Claude Code. Antigravity xử lý chúng thế nào thì tôi chưa kiểm chứng.</p>
+
+<p><strong>Bước 1 — Tự đo context (2 phút).</strong> Trong my-agent, chạy <code>claude -p "/context"</code>. Ghi lại hai dòng Skills và Memory files. Hai số đó có khớp với Hình 2 không?</p>
+
+<p><strong>Bước 2 — Chấm từng skill (8 phút).</strong> Dùng checklist trong <a href="../reference/skills.html">cheat sheet</a>: description có cả "làm gì" lẫn "khi nào"; thân dưới 500 dòng; tài liệu tham chiếu sâu một tầng; phần "cây cầu hẹp" đã thành script chưa. Ghi lại số skill đạt đủ cả bốn.</p>
+
+<p><strong>Bước 3 — Ra ba quyết định.</strong></p>
+<ol>
+  <li><code>teach</code>: giữ <code>disable-model-invocation: true</code>, hay bỏ cờ và viết description đầy đủ? Cân nhắc: lần nào anh nói "học tiếp" mà không gõ <code>/teach</code> thì agent sẽ không biết đến skill này.</li>
+  <li><code>skill-creator</code> bản project và <code>anthropic-skills:skill-creator</code> bản đồng bộ từ claude.ai cùng có mặt trong listing. Giữ cả hai, hay tắt một bản bằng <code>skillOverrides</code>?</li>
+  <li><code>research</code>: viết lại description để nó được gọi khi anh cần tài liệu chính thức. Nhưng đừng để nó nuốt mọi câu hỏi kỹ thuật.</li>
+</ol>
+
+<p><strong>Bước 4 — Đo lại trigger của <code>research</code>.</strong> Chạy trước và sau khi sửa description. Bắt buộc dùng đúng các cờ dưới đây: chúng để lại cho phiên đúng một tool <code>Skill</code>, không có MCP, nên không ghi được gì.</p>
+<pre><code>cd ~/workspace/my-agent
+for q in "So sánh Kafka và RabbitMQ cho hệ thống thanh toán, cái nào hợp hơn?" \
+         "Tìm hiểu giúp tôi Virtual Threads của Java 21 có dùng được với Spring Boot 3 không"; do
+  for r in 1 2; do
+    claude -p "$q" --tools "Skill" --strict-mcp-config --max-turns 1 \
+      --output-format stream-json --verbose 2&gt;/dev/null |
+    jq -r 'select(.type=="system" and .subtype=="init") | "tools=" + (.tools|join(","))
+         , (select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | "skill=" + .input.skill)'
+  done
+done</code></pre>
+<p class="small">Mỗi lần chạy phải in ra <code>tools=Skill</code>. Nếu thấy tool khác, dừng lại và báo tôi. <code>error_max_turns</code> là bình thường: ta chỉ cần biết lượt đầu có gọi Skill không.</p>
+
+<p>Trả lời bốn câu:</p>
+<ol>
+  <li>Bước 1: Skills và Memory files bao nhiêu token? Cái nào lớn hơn, và anh định làm gì với cái lớn hơn?</li>
+  <li>Bước 2: bao nhiêu/9 skill đạt cả bốn tiêu chí? Lỗi hay gặp nhất là gì?</li>
+  <li>Bước 3: ba quyết định của anh, mỗi cái một dòng lý do.</li>
+  <li>Bước 4: <code>research</code> được gọi x/4 trước khi sửa và y/4 sau khi sửa. Câu "Viết hàm đảo chuỗi" có bị kéo vào <code>research</code> không? (Thử một lần.)</li>
+</ol>
+
+<details>
+  <summary>Gợi ý (mở sau khi đã làm)</summary>
+  <p><strong>Câu 1.</strong> Lúc tôi đo, Memory files là 11,1k, lớn hơn Skills (7,8k). Phần lớn đến từ <code>~/.claude/CLAUDE.md</code> của OMC, dài khoảng 290 dòng (đã ghi ở bài 2). Đây là ứng viên đầu tiên: phần nào đọc như quy trình thì chuyển thành skill.</p>
+  <p><strong>Câu 3.</strong> Không có đáp án đúng duy nhất. Với <code>teach</code>, một lối giữa: giữ cờ, nhưng thêm vào AGENTS.md một dòng "học tiếp / tạo lesson → dùng /teach". Dòng đó là sự thật luôn cần, nên đặt ở CLAUDE.md là đúng chỗ. Với <code>research</code>, hãy viết tình huống chứ đừng chỉ viết chủ đề, ví dụ "khi tôi cần nguồn chính thức, so sánh có trích dẫn, hoặc nói 'tìm hiểu giúp', 'nghiên cứu'…", và nói rõ khi nào <em>không</em> dùng.</p>
+  <p><strong>Câu 4.</strong> Nếu y tăng mà câu đảo chuỗi cũng bị kéo vào, description đã quá "nài nỉ". Trigger eval luôn cần cả câu dương lẫn câu âm, giống test có cả positive case và negative case.</p>
+</details>
+
+<h2>6. Kiểm tra cuối bài</h2>
+<p>Ba câu tình huống, hai câu tự diễn đạt.</p>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Team có quy định "không bao giờ sửa file trong <code>db/migration/</code> đã merge". Anh đã viết nó vào skill <code>review-java</code>, nhưng agent vẫn thỉnh thoảng sửa. Nên làm gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Chuyển quy định sang hook chặn Edit vào thư mục migration</li>
+    <li>Viết quy định bằng chữ in hoa ở đầu file SKILL.md</li>
+    <li>Chép quy định sang CLAUDE.md để nó luôn nằm trong context</li>
+    <li>Tách quy định ra một file reference riêng nằm trong skill</li>
+  </ul>
+  <p class="quiz-explain">Luật phải đúng mọi lần thì đặt ở hook: harness chạy nó trước mỗi Edit, không phụ thuộc model có nạp hay nhớ skill hay không. Skill chỉ được nạp khi model thấy cần, và CLAUDE.md vẫn chỉ là context, model có thể bỏ qua. Viết hoa không đổi được bản chất đó.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Skill <code>release</code> có thân 900 dòng: checklist chung, quy trình cho 4 loại service, và bảng mã lỗi. Thường mỗi lần chỉ dùng cho một loại service. Tổ chức lại thế nào?</p>
+  <ul class="quiz-options">
+    <li data-correct>SKILL.md giữ checklist chung, mỗi loại service có một file riêng</li>
+    <li>Giữ nguyên một file vì model đọc file dài vẫn tốt</li>
+    <li>Chuyển toàn bộ nội dung sang CLAUDE.md cho thật chắc chắn</li>
+    <li>Chia bốn file nối nhau, file sau trỏ từ file trước</li>
+  </ul>
+  <p class="quiz-explain">Đây là mẫu "domain-specific organization": thân dưới 500 dòng, mỗi domain một file, trỏ thẳng từ SKILL.md (sâu một tầng). Chuỗi file nối nhau làm model có thể chỉ đọc lướt. Chuyển vào CLAUDE.md thì trả 900 dòng ở mọi phiên.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Anh muốn đo xem skill mới có được gọi đúng lúc không, bằng <code>claude -p</code> trên repo thật, máy để <code>defaultMode: "auto"</code>. Cờ nào giữ phiên an toàn?</p>
+  <ul class="quiz-options">
+    <li data-correct>Dùng --tools "Skill" cùng --strict-mcp-config, rồi kiểm tra lại event init</li>
+    <li>--allowedTools "Skill", vì cờ đó chỉ cho phép đúng tool Skill</li>
+    <li>--tools "Skill", vì cờ đó gỡ hết mọi tool còn lại</li>
+    <li>--max-turns 1, vì một lượt thì chưa kịp ghi file nào</li>
+  </ul>
+  <p class="quiz-explain">Đúng như chuyện ở mục 3. <code>--allowedTools</code> chỉ duyệt trước, không gỡ tool khác. <code>--tools</code> gỡ built-in nhưng để lại tool MCP. <code>--max-turns 1</code> vẫn cho model gọi một tool ghi file ngay ở lượt đầu. Phải dùng cả hai cờ và đọc danh sách tool thật trong <code>init</code>.</p>
+</div>
+
+<details>
+  <summary>Tự diễn đạt 1: giải thích cho một dev trong team, trong 3 câu, vì sao một quy trình 300 dòng nên là skill chứ không nên nằm trong CLAUDE.md. Dùng chữ "progressive disclosure" đúng nghĩa.</summary>
+  <p>CLAUDE.md được nạp toàn bộ vào mọi phiên, nên 300 dòng đó bị trả tiền kể cả khi phiên không liên quan, và còn chen vào sự chú ý của model. Skill theo progressive disclosure: lúc đầu chỉ có tên và description (khoảng 100 token) nằm trong context, thân chỉ được nạp khi model thấy việc hiện tại khớp, còn tài liệu và script phụ chỉ được mở hoặc chạy khi chỉ dẫn bảo cần. Cái giá phải trả: skill phụ thuộc vào việc description có kích hoạt được hay không, nên phải đo trigger.</p>
+</details>
+
+<details>
+  <summary>Tự diễn đạt 2: nối bài 5 với bài 6 trong 2 câu. Description của tool và description của skill giống và khác nhau ở đâu?</summary>
+  <p>Giống: cả hai là giao diện mà model đọc để quyết định, nên phải nói làm gì, khi nào dùng, bằng từ khóa người dùng hay nói, và phải được đo bằng eval chứ không đoán. Khác: description của tool quyết định model <em>gọi tool thế nào</em> (đã biết tool tồn tại, schema đi kèm), còn description của skill quyết định model <em>có nạp quy trình hay không</em>. Model hay bỏ qua skill khi tự tin, nên description của skill cần "nài nỉ" hơn.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>Tóm lại</h2>
+<ul>
+  <li><strong>Skill = tài liệu onboarding nạp lười:</strong> thư mục gồm <code>SKILL.md</code>, tài liệu tham chiếu, script. Model quyết định nạp dựa trên description.</li>
+  <li><strong>Ba tầng:</strong> metadata luôn nạp (~100 token/skill, cắt ở 1.536 ký tự, cả listing ≤ 1% context), thân khi gọi (&lt; 500 dòng), tài nguyên khi cần (script chỉ tốn output).</li>
+  <li><strong>Trên máy anh:</strong> listing ~90 skill tốn 7,8k token, ít hơn memory files (11,1k).</li>
+  <li><strong>Trigger phải đo:</strong> <code>research</code> 0/2 vì model tự tin tự trả lời; <code>teach</code> vô hình vì <code>disable-model-invocation</code>. Eval cần cả câu dương lẫn câu âm.</li>
+  <li><strong>Chọn chỗ đặt:</strong> sự thật → CLAUDE.md; quy trình → skill; luật bắt buộc → hook; năng lực ngoài → MCP tool; bước tất định → script.</li>
+  <li><strong>Eval harness cũng cần sandbox:</strong> <code>--tools … --strict-mcp-config</code>, rồi đọc event <code>init</code>.</li>
+</ul>
+<p>Bài 7 vẫn ở Module 3: <strong>agent memory</strong>. Thư mục <code>memory/</code> của my-agent (vừa bị eval của tôi ghi nhầm) là một hệ memory dài hạn tự chế. Ta sẽ đối chiếu nó với lý thuyết: short-term và long-term, episodic và semantic, và chuyện "quên".</p>
+
+<h2>Đọc thêm</h2>
+<p><strong>Nguồn chính:</strong> <a href="https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices">Skill authoring best practices</a> của Anthropic (khoảng 25 phút). Đọc kỹ "Core principles", "Writing effective descriptions", "Progressive disclosure patterns", và "Evaluation and iteration". Sau đó lướt <a href="https://code.claude.com/docs/en/skills">trang Skills của Claude Code</a>, phần frontmatter và troubleshooting, và <a href="https://agentskills.io/specification">spec chuẩn mở</a> (10 phút) để biết trường nào mang sang được harness khác.</p>
+
+<div class="callout">
+  <span class="label">Báo lại cho tôi</span>
+  <p><strong>Còn nợ:</strong> kết quả bài 4 và bài 5 (số câu đúng/sai, câu tự diễn đạt, số liệu thực hành). Ba bài liền chưa có evidence thì tôi đang căn độ khó gần như mò mẫm. Gửi tắt cũng được, ví dụ "B4 1/1 3/4 sai câu transport; B5 1/1 2/3".</p>
+  <p><strong>Bài 6:</strong> (1) Khởi động <strong>x/1</strong> và câu đoán của anh. (2) Cuối bài <strong>y/3</strong>, kèm đáp án đã chọn nếu sai, và 2 câu tự diễn đạt. (3) Bốn câu thực hành, nhất là <em>x/4 → y/4</em> của <code>research</code> và ba quyết định ở bước 3. Chỗ nào chưa rõ, cứ hỏi tôi.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0005-thiet-ke-tool-cho-agent.html">← Bài 5: Thiết kế tool</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0007-agent-memory.html">Bài 7: Agent memory →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/diagram.js"></script>
+</body>
+</html>

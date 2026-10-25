@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Coding Agent Evaluation &amp; Benchmarks</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Coding Agent Eval · cập nhật 2026-10-25 · <a href="../lessons/0012-eval-cho-coding-agent.html">Bài 12</a> · <a href="agent-ready.html">Agent-ready</a> · <a href="subagents.html">Subagents</a> · <a href="hooks.html">Hooks</a> · <a href="instruction-files.html">Instruction files</a> · <a href="glossary.html">Glossary</a> · <a href="lo-trinh.html">Lộ trình</a></p>
+
+<h1>Coding Agent Evaluation &amp; Benchmarks</h1>
+<p class="subtitle">Phương pháp đo lường định lượng và thiết lập hệ thống benchmark tự động để kiểm chứng hiệu năng, chi phí token và tính đúng đắn của Coding Agent trong môi trường doanh nghiệp.</p>
+
+<h2>1. Ba tầng kiểm thử trong Agentic Engineering</h2>
+<table>
+  <tr><th>Tầng kiểm thử</th><th>Đối tượng kiểm tra</th><th>Mục đích cốt lõi</th><th>Công cụ &amp; Phương pháp</th></tr>
+  <tr>
+    <td><strong>1. Tool Unit Test</strong></td>
+    <td>Code backend của tool/MCP server</td>
+    <td>Đảm bảo hàm thực thi không bị văng exception bất ngờ, trả về JSON/text đúng schema kỹ thuật.</td>
+    <td>JUnit, Mockito, Pytest, <code>Client(server)</code> in-memory test.</td>
+  </tr>
+  <tr>
+    <td><strong>2. Tool-level Eval</strong></td>
+    <td>Khả năng chọn tool của Model (Single turn)</td>
+    <td>Đo lường model có kích hoạt đúng tool (Trigger) và truyền đúng tham số (Arguments) khi nhận prompt nhập nhằng.</td>
+    <td>Eval prompts dataset, Confusion Matrix, Trigger Rate (đã học ở Bài 5).</td>
+  </tr>
+  <tr>
+    <td><strong>3. Agent-level Eval (E2E)</strong></td>
+    <td>Toàn bộ chuỗi hành động ReAct (Multi-turn)</td>
+    <td>Đo lường agent có tự giải quyết được ticket/bug thật trong codebase, chạy test pass và không gây regression hay không.</td>
+    <td>SWE-bench harness, Headless CLI runner (<code>claude -p</code>), Dockerized sandbox.</td>
+  </tr>
+</table>
+
+<h2>2. Bộ chỉ số đo lường chuẩn (Agent Core Metrics)</h2>
+<table>
+  <tr><th>Chỉ số</th><th>Đơn vị tính</th><th>Ý nghĩa kỹ thuật</th><th>Kỳ vọng cải tiến</th></tr>
+  <tr>
+    <td><strong>Pass Rate / Resolve Rate</strong></td>
+    <td>Tỷ lệ %</td>
+    <td>Tỷ lệ số task agent sửa code khiến toàn bộ unit/integration test pass hoàn toàn.</td>
+    <td>Càng cao càng tốt (&gt;70% cho task vừa và nhỏ).</td>
+  </tr>
+  <tr>
+    <td><strong>Turns to Solve</strong></td>
+    <td>Số lượt (turn count)</td>
+    <td>Số lần agent gọi tool và suy nghĩ qua lại trước khi dừng lại báo hoàn thành.</td>
+    <td>Càng ít càng tốt (thể hiện agent đi đúng hướng, không loanh quanh).</td>
+  </tr>
+  <tr>
+    <td><strong>Token Consumption</strong></td>
+    <td>Tokens (Input / Output)</td>
+    <td>Tổng số token tiêu thụ trong suốt phiên làm việc. Quyết định trực tiếp hóa đơn tiền điện toán ($).</td>
+    <td>Giảm 30–50% khi có <code>AGENTS.md</code> chuẩn và subagent cô lập context.</td>
+  </tr>
+  <tr>
+    <td><strong>Wall-clock Runtime</strong></td>
+    <td>Giây / Phút</td>
+    <td>Thời gian thực tế từ lúc giao task đến khi agent hoàn tất.</td>
+    <td>Càng ngắn càng tốt (&lt;3–5 phút cho một ticket thông thường).</td>
+  </tr>
+  <tr>
+    <td><strong>Tool Error Rate</strong></td>
+    <td>Tỷ lệ %</td>
+    <td>Tỷ lệ tool calls bị fail (ví dụ: gõ sai lệnh bash, sai cú pháp str_replace, đường dẫn file không tồn tại).</td>
+    <td>Càng thấp càng tốt (phản ánh chất lượng tài liệu và instruction).</td>
+  </tr>
+</table>
+
+<h2>3. Cấu trúc một Task trong Internal Eval Set</h2>
+<p>Một bài test benchmark chuẩn mực cho coding agent gồm 4 thành phần tất định:</p>
+<ol>
+  <li><strong>Task ID &amp; Issue Statement:</strong> Mô tả lỗi hoặc yêu cầu tính năng thực tế từ Jira/GitHub Issue (không gợi ý cách sửa).</li>
+  <li><strong>Base Commit (Git SHA):</strong> Trạng thái commit của repo trước khi sửa lỗi (nơi bug đang tồn tại).</li>
+  <li><strong>Verification Oracle (Bài kiểm thử chứng minh):</strong>
+    <ul>
+      <li><code>Fail-to-Pass (F2P)</code>: Bài test kiểm tra hành vi bị lỗi. Ở Base Commit bài test này <strong>phải FAIL</strong>; sau khi agent sửa xong bài test này <strong>phải PASS</strong>.</li>
+      <li><code>Pass-to-Pass (P2P)</code>: Toàn bộ các bài test cũ của hệ thống. Phải tiếp tục PASS để chứng minh agent không phá hỏng tính năng cũ (No Regression).</li>
+    </ul>
+  </li>
+  <li><strong>Environment Container:</strong> Docker container hoặc workspace cô lập với đầy đủ database, JDK, và dependencies sẵn sàng.</li>
+</ol>
+
+<h2>4. So sánh: SWE-bench công khai vs Internal Eval nội bộ</h2>
+<table>
+  <tr><th>Tiêu chí</th><th>SWE-bench (Lite / Verified)</th><th>Internal Domain-specific Eval</th></tr>
+  <tr>
+    <td><strong>Nguồn dữ liệu</strong></td>
+    <td>Repo mã nguồn mở Python phổ biến (Django, SymPy, Flask, requests...)</td>
+    <td>Repo nghiệp vụ thực tế của công ty (Java/Spring Boot, Oracle, Kafka)</td>
+  </tr>
+  <tr>
+    <td><strong>Rủi ro Data Leakage</strong></td>
+    <td>Cao (Code và PR giải quyết có sẵn trên GitHub, model có thể đã "học vẹt" trong pre-training)</td>
+    <td><strong>Bằng 0</strong> (Mã nguồn độc quyền, private repo, model chưa từng thấy trước đây)</td>
+  </tr>
+  <tr>
+    <td><strong>Mức độ sát thực</strong></td>
+    <td>Thấp đối với môi trường doanh nghiệp (thiếu các ràng buộc về audit, security, banking conventions)</td>
+    <td><strong>100% sát thực</strong> (Đo lường chính xác hiệu quả làm việc hàng ngày của kỹ sư)</td>
+  </tr>
+  <tr>
+    <td><strong>Chi phí thực thi</strong></td>
+    <td>Rất đắt đỏ (SWE-bench full có 2.294 bài test, chạy mất hàng nghìn USD)</td>
+    <td>Rất rẻ (Bộ eval nội bộ tinh gọn chỉ gồm 5–10 tasks cốt lõi, chạy trong 15 phút)</td>
+  </tr>
+</table>
+
+<h2>5. Quy trình A/B Testing cho Instruction &amp; Codebase</h2>
+<div class="diagram">
+<pre>
+          ┌────────────────────────────────────────────────────────┐
+          │             Bộ 5 Tasks Kiểm Thử Nội Bộ                 │
+          └───────────┬────────────────────────────────┬───────────┘
+                      │                                │
+                      ▼ [Nhóm Đối Chứng - Baseline]    ▼ [Nhóm Thử Nghiệm - Treatment]
+          ┌──────────────────────────────┐ ┌──────────────────────────────┐
+          │   Repo Gốc (Chưa chuẩn hóa)  │ │   Repo Agent-Ready           │
+          │   - Không có AGENTS.md       │ │   - Có AGENTS.md chuẩn 80 dòng│
+          │   - Không có Hook            │ │   - Có Fast Test Runner      │
+          │   - Test suite chạy 20 phút  │ │   - Có PostToolUse Lint Gate │
+          └──────────────┬───────────────┘ └──────────────┬───────────────┘
+                         │                                │
+                         ▼ Chạy Headless Eval             ▼ Chạy Headless Eval
+          ┌──────────────────────────────┐ ┌──────────────────────────────┐
+          │ • Pass Rate: 20% (1/5 pass)  │ │ • Pass Rate: 80% (4/5 pass)  │
+          │ • Tokens TB: 85k / task      │ │ • Tokens TB: 22k / task      │
+          │ • Turns TB: 24 lượt          │ │ • Turns TB: 7 lượt           │
+          │ • Chi phí: 6.80 USD          │ │ • Chi phí: 1.75 USD (-74%)   │
+          └──────────────────────────────┘ └──────────────────────────────┘
+</pre>
+</div>
+
+</main>
+</body>
+</html>

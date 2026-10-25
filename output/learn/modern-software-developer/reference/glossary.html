@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glossary — Modern Software Developer</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Glossary · cập nhật 2026-10-25 (bài 12) · <a href="../../llm-foundation/reference/glossary.html">Glossary nền (llm-foundation)</a></p>
+
+<h1>Glossary</h1>
+<p class="subtitle">Ngôn ngữ chuẩn của khóa này, nối tiếp glossary của llm-foundation (token, context window, stateless call, prompt caching… đọc ở đó). Một thuật ngữ chỉ vào đây khi Luật đã dùng đúng nó.</p>
+
+<p class="callout"><span class="label">Quy ước</span>Thuật ngữ giữ tiếng Anh. Định nghĩa nói thứ đó <em>là gì</em>. Dòng <em>Tránh</em> liệt kê cách gọi lỏng lẻo không dùng trong workspace.</p>
+
+<h2>Coding agent</h2>
+
+<p><strong>Harness</strong>:<br>
+Phần code bao quanh model trong một agent: giữ vòng lặp, cung cấp và thực thi tool, quản lý context, kiểm soát quyền. Model chỉ sinh text; mọi thao tác thật đều do harness làm.<br>
+<em>Tránh</em>: "Claude tự sửa file", "model chạy lệnh".</p>
+
+<p><strong>Vòng lặp ba pha (gather → act → verify)</strong>:<br>
+Chu trình làm việc của một coding agent: tìm hiểu (đọc, tìm kiếm), sửa (edit, chạy lệnh), kiểm tra (build, test), lặp lại tới khi xong. Thiếu pha kiểm tra thì agent chỉ còn đoán.<br>
+<em>Tránh</em>: "agent tự chạy", "auto mode" khi nói về cấu trúc vòng lặp.</p>
+
+<p><strong>str_replace</strong>:<br>
+Cách sửa file bằng cách đưa đoạn cũ (<code>old_string</code>) và đoạn mới. Đoạn cũ phải khớp chính xác và khớp đúng một chỗ. Nếu vi phạm, tool trả lỗi về để model tự sửa cách gọi.<br>
+<em>Tránh</em>: "patch", "diff" khi nói về cơ chế này; "sửa dòng số N".</p>
+
+<p><strong>ReAct</strong>:<br>
+Mẫu vòng lặp xen kẽ nghĩ → làm (gọi tool) → quan sát (đọc tool_result). Quan sát thật chặn lỗi dây chuyền của suy luận thuần. Mọi coding agent hiện nay đều là ReAct, thường cộng thêm một plan tool mỏng.<br>
+<em>Tránh</em>: "agent tự suy nghĩ", "chain-of-thought" khi có gọi tool.</p>
+
+<h2>Instruction</h2>
+
+<p><strong>System prompt</strong>:<br>
+Phần chỉ dẫn cố định do harness viết, nằm ngay sau tool definitions: vai trò, cách dùng tool, luật an toàn, môi trường. Đọc nó như một runbook: mỗi dòng chặn một lỗi đã từng xảy ra.<br>
+<em>Tránh</em>: gọi CLAUDE.md là "system prompt".</p>
+
+<p><strong>Instruction file (CLAUDE.md / AGENTS.md)</strong>:<br>
+File chỉ dẫn do team viết, được harness đưa vào context. Với Claude Code, nó là user message nằm sau system prompt. Đây là context, không phải cấu hình bắt buộc: các file được nối lại với nhau, và khi mâu thuẫn thì model có thể chọn bừa.<br>
+<em>Tránh</em>: "config của agent", "luật bắt buộc".</p>
+
+<p><strong>Non-standard convention</strong>:<br>
+Quy ước kỹ thuật khác thường của dự án mà model không thể tự suy ra từ pre-training hay kiến thức phổ thông (custom wrapper, ID format, thư viện nội bộ). Đây là nội dung có ROI cao nhất trong instruction file.<br>
+<em>Tránh</em>: đưa kiến thức lập trình cơ bản vào AGENTS.md.</p>
+
+<p><strong>Prefix cache (Prompt caching)</strong>:<br>
+Cơ chế cache các token ở phần đầu prompt nếu chúng không đổi giữa các lượt gọi. Yêu cầu nội dung ở phần đầu (system prompt, AGENTS.md) phải tĩnh tuyệt đối để không làm vỡ cache breakpoint ở phía sau.<br>
+<em>Tránh</em>: chèn ngày giờ hoặc lệnh biến động vào instruction file.</p>
+
+<p><strong>Hierarchical discovery (instruction)</strong>:<br>
+Cơ chế nạp file chỉ dẫn phân cấp: file ở root nạp cho toàn repo, file ở thư mục con (sub-AGENTS.md) chỉ nạp khi agent thao tác trong phạm vi thư mục đó.<br>
+<em>Tránh</em>: gom hết quy ước của từng module con vào root file.</p>
+
+<p><strong>Hook</strong>:<br>
+Code do harness chạy tại một thời điểm cố định trong vòng lặp, ví dụ PreToolUse chạy trước khi tool được thực thi. Hook chặn được một hành động bất kể model quyết định gì. So với instruction file: hook giống constraint trong database, còn instruction file giống comment trong code.<br>
+<em>Tránh</em>: "rule", "guard" khi ý là lời dặn trong CLAUDE.md.</p>
+
+<p><strong>PreToolUse / PostToolUse</strong>:<br>
+Hai điểm neo vòng lặp quan trọng nhất: PreToolUse chạy trước khi tool ghi đĩa/chạy lệnh (dùng làm guardrail, exit khác 0 để abort); PostToolUse chạy sau khi tool xong (dùng làm lint/test gate, bắt stderr đưa vào context).<br>
+<em>Tránh</em>: nhầm lẫn giữa điểm chặn trước và điểm kiểm tra sau.</p>
+
+<p><strong>Guardrail (chốt chặn an toàn)</strong>:<br>
+Cơ chế kiểm soát cứng nhằm ngăn chặn agent thực thi các hành động nguy hiểm hoặc vi phạm chính sách bảo mật (sửa migration đã merge, xóa database, leak secret). Thường được hiện thực qua PreToolUse hook.<br>
+<em>Tránh</em>: "system prompt reminder".</p>
+
+<p><strong>Tight feedback loop (vòng lặp phản hồi chặt chẽ)</strong>:<br>
+Quy trình tự động hóa việc đưa lỗi từ compiler, linter hoặc test runner trực tiếp vào context của agent ngay sau mỗi thao tác sửa code, giúp model tự sửa lỗi mà không cần con người can thiệp.<br>
+<em>Tránh</em>: chờ human code review mới báo lỗi cú pháp.</p>
+
+<h2>MCP</h2>
+
+<p><strong>MCP host / client / server</strong>:<br>
+Host là ứng dụng AI (Claude Code) quản lý các client. Client là một kết nối bên trong host, ứng với đúng một server. Server là process cung cấp tools, resources, prompts.<br>
+<em>Tránh</em>: "Claude Code là MCP client" (nó là host chứa nhiều client), "cài MCP" khi ý là thêm một server.</p>
+
+<p><strong>Primitive (tools / resources / prompts)</strong>:<br>
+Ba loại thứ server cung cấp, phân biệt bằng ai quyết định dùng: tools do model gọi, resources do ứng dụng đưa vào context, prompts do người dùng chọn.<br>
+<em>Tránh</em>: gọi mọi thứ server cung cấp là "tool".</p>
+
+<p><strong>Transport (stdio / Streamable HTTP)</strong>:<br>
+Đường đi của message MCP. stdio: server là process con, stdout là đường truyền. Streamable HTTP: server là service với một endpoint nhận POST, xác thực bằng OAuth 2.1. HTTP+SSE là transport cũ, đã deprecated.<br>
+<em>Tránh</em>: "SSE server" khi nói về server HTTP hiện đại.</p>
+
+<p><strong>Tool execution error vs protocol error</strong>:<br>
+Tool execution error nằm trong <code>result</code> với <code>isError: true</code>, model đọc được và tự sửa. Protocol error là JSON-RPC <code>error</code> (sai cấu trúc, method lạ), dành cho người viết client. Lỗi nghiệp vụ phải đi đường thứ nhất, kèm message chỉ cách sửa.<br>
+<em>Tránh</em>: "tool bị crash" khi tool trả lỗi có chủ đích.</p>
+
+<h2>Thiết kế tool</h2>
+
+<p><strong>Namespacing (tool)</strong>:<br>
+Đặt tiền tố chung cho các tool cùng nhóm (<code>learn_get_progress</code>, <code>learn_list_topics</code>) để model phân biệt ranh giới khi có nhiều tool từ nhiều server. Claude Code tự thêm <code>mcp__&lt;server&gt;__</code>, nhưng đó là cho permission và hook; tên tool vẫn nên tự mô tả.<br>
+<em>Tránh</em>: tên chung chung như <code>search</code>, <code>get_data</code>.</p>
+
+<p><strong>Unit test tool vs tool eval</strong>:<br>
+Unit test kiểm tra hợp đồng của server (schema, message lỗi, kích thước output) qua in-memory client, tất định, chạy mỗi commit. Tool eval chạy agent thật trên bộ task và đo đúng, số lần gọi, số lỗi, token; kết quả là con số có nhiễu, chạy khi đổi thiết kế.<br>
+<em>Tránh</em>: "test bằng cách hỏi thử agent vài câu" khi muốn nói về eval; gọi eval là "test pass".</p>
+
+<h2>Skill</h2>
+
+<p><strong>Skill</strong>:<br>
+Thư mục gồm <code>SKILL.md</code> (frontmatter + chỉ dẫn), tài liệu tham chiếu và script, được agent nạp khi việc hiện tại khớp với description. Đóng gói <em>cách làm</em>, khác MCP tool đóng gói <em>năng lực</em>.<br>
+<em>Tránh</em>: gọi skill là "plugin" (plugin là gói phân phối, có thể chứa skill, hook, MCP server) hay "prompt template".</p>
+
+<p><strong>Progressive disclosure</strong>:<br>
+Cách nạp context theo tầng: metadata của mọi skill luôn có mặt, thân skill nạp khi được gọi, tài liệu và script chỉ mở hoặc chạy khi chỉ dẫn bảo cần. Mục đích là chỉ trả token cho phần việc hiện tại cần.<br>
+<em>Tránh</em>: dùng như từ đồng nghĩa với "tóm tắt" hay "RAG".</p>
+
+<p><strong>Trigger (skill)</strong>:<br>
+Việc model quyết định gọi một skill, chỉ dựa trên name và description trong listing. Undertrigger: không gọi dù skill có ích, hay gặp khi model tự tin tự làm được. Đo bằng trigger eval có cả câu dương và câu âm.<br>
+<em>Tránh</em>: "skill tự chạy".</p>
+
+<h2>Memory</h2>
+
+<p><strong>Working memory (bộ nhớ làm việc)</strong>:<br>
+Toàn bộ context window của lượt gọi hiện tại (system prompt, lịch sử hội thoại gần, tool results). Tồn tại ngắn hạn, mất sạch khi phiên kết thúc hoặc bị nén sau compaction.<br>
+<em>Tránh</em>: "bộ nhớ của model", "RAM của máy".</p>
+
+<p><strong>Episodic memory (bộ nhớ trải nghiệm)</strong>:<br>
+Nhật ký các sự kiện, hành động và kết quả đã diễn ra trong quá khứ gắn với mốc thời gian cụ thể. Giúp agent học từ lỗi sai cũ và tiếp nối mạch làm việc qua các phiên.<br>
+<em>Tránh</em>: "chat history" khi ý chỉ lịch sử của nhiều phiên trước; "vector database".</p>
+
+<p><strong>Semantic memory (bộ nhớ ngữ nghĩa)</strong>:<br>
+Tri thức, sự thật, sở thích và quy tắc đã được đúc kết thành khái niệm độc lập với thời gian. Thường được lưu dưới dạng fact hoặc file ghi chú có cấu trúc.<br>
+<em>Tránh</em>: nhầm với episodic memory; "kiến thức học từ pre-training".</p>
+
+<p><strong>Procedural memory (bộ nhớ quy trình)</strong>:<br>
+Kỹ năng và cách thức thực hiện hành động: mã nguồn tool, định nghĩa skill, playbook quy trình, script tự động hóa. Đóng gói cách làm thay vì sự thật.<br>
+<em>Tránh</em>: gọi mã nguồn hay tool là "semantic memory".</p>
+
+<p><strong>Consolidation (đúc kết / hợp nhất ký ức)</strong>:<br>
+Quá trình chuyển hóa các sự kiện rời rạc từ episodic memory thành tri thức cô đọng trong semantic memory, loại bỏ chi tiết thừa và cập nhật mâu thuẫn.<br>
+<em>Tránh</em>: "tóm tắt hội thoại", "nén context".</p>
+
+<p><strong>Memory decay / forgetting (quên / loại bỏ ký ức)</strong>:<br>
+Cơ chế vô hiệu hóa hoặc xóa bỏ các ký ức đã cũ, sai lệch hoặc mâu thuẫn để tránh context rot và dirty read. Tương đương cache eviction / invalidation trong backend.<br>
+<em>Tránh</em>: "xóa lịch sử chat", "reset model".</p>
+
+<h2>Multi-agent &amp; Subagent</h2>
+
+<p><strong>Subagent</strong>:<br>
+Tác tử con được sinh ra với ngữ cảnh cô lập (context fork) để giải quyết một nhiệm vụ chuyên biệt, sau đó chỉ trả kết quả cô đọng về cho agent chính. Giúp dọn sạch rác trung gian và bảo vệ context chính.<br>
+<em>Tránh</em>: "gọi API LLM thông thường", "prompts lồng nhau".</p>
+
+<p><strong>Context fork</strong>:<br>
+Kỹ thuật tạo một nhánh ngữ cảnh độc lập tạm thời cho subagent thực thi, vứt bỏ toàn bộ lịch sử các bước đọc file hay thử sai trung gian sau khi hoàn tất tác vụ.<br>
+<em>Tránh</em>: "mở session chat mới".</p>
+
+<p><strong>Orchestrator-Workers</strong>:<br>
+Mô hình kiến trúc phân cấp (hierarchical) trong đó agent điều phối (orchestrator) phân tích mục tiêu, chia nhỏ công việc cho các worker chuyên biệt (researcher, implementer, reviewer) và tổng hợp kết quả cuối cùng.<br>
+<em>Tránh</em>: "nhóm chat tự do", "multi-agent không người điều phối".</p>
+
+<p><strong>Handoff artifact</strong>:<br>
+Vật phẩm chuyển giao có cấu trúc (file spec, checklist, diff patch, test report) được truyền giữa các agent trong pipeline thay vì nhồi nguyên lịch sử hội thoại tự do không kiểm soát.<br>
+<em>Tránh</em>: "tin nhắn chat qua lại".</p>
+
+<p><strong>Ping-pong loop (Banter trap)</strong>:<br>
+Bẫy tương tác đa tác tử khi hai hoặc nhiều agent trao đổi, tranh luận hoặc khen ngợi nhau qua lại vô tận mà không tạo ra bước tiến kỹ thuật nào, làm cạn kiệt ngân sách token và gây treo hệ thống.<br>
+<em>Tránh</em>: "agent đang hợp tác chặt chẽ", "tranh biện đa góc nhìn" khi không có tiến triển.</p>
+
+<h2>Agent-Ready Codebase &amp; Eval</h2>
+
+<p><strong>Agent-ready codebase</strong>:<br>
+Kho lưu trữ mã nguồn được cấu trúc và tài liệu hóa có chủ đích để coding agent có thể tự động khám phá, sửa mã, và xác minh độc lập thông qua công cụ tất định và vòng lặp phản hồi siêu tốc.<br>
+<em>Tránh</em>: "repo có nhiều tài liệu README", "code viết cho người đọc".</p>
+
+<p><strong>Fast feedback test subset</strong>:<br>
+Tập hợp con các bài kiểm thử đơn vị độc lập chạy cực nhanh (&lt; 15–30 giây) để agent dùng làm quan sát phản hồi (feedback observation) trong vòng lặp ReAct, tách biệt với test suite tích hợp chạy hàng chục phút.<br>
+<em>Tránh</em>: "chạy full regression test sau mỗi turn", "bỏ qua khâu viết test".</p>
+
+<p><strong>Hermetic build</strong>:<br>
+Quy trình build hoàn toàn khép kín và tự túc, chỉ phụ thuộc vào các công cụ đóng gói sẵn trong repo (như <code>./mvnw</code> hoặc <code>./gradlew</code>), không đòi hỏi cấu hình máy chủ hay biến môi trường ngầm định.<br>
+<em>Tránh</em>: "build script chạy được trên laptop của tech lead".</p>
+
+<p><strong>Agent-ready scorecard</strong>:<br>
+Thang đo định lượng (thường là thang 100 điểm) gồm các tiêu chí về instruction, build, test, linter, containerization và guardrails để đánh giá mức độ thân thiện và an toàn của codebase đối với coding agent.<br>
+<em>Tránh</em>: "đánh giá cảm tính", "code smells thông thường".</p>
+
+<p><strong>Agent-level eval</strong>:<br>
+Phương pháp kiểm thử tự động toàn diện từ đầu đến cuối (E2E), đánh giá khả năng của coding agent trong việc giải quyết một bài toán lập trình thực tế qua nhiều lượt gọi tool trong môi trường cô lập.<br>
+<em>Tránh</em>: "chấm điểm prompt", "hỏi chatbot một câu".</p>
+
+<p><strong>Evaluation oracle</strong>:<br>
+Cơ chế hoặc nguồn chân lý tất định (thường là bộ automated tests) dùng để xác minh xem agent đã thực sự giải quyết được bài toán kỹ thuật hay chưa, phân biệt với việc dùng LLM để chấm điểm cảm tính.<br>
+<em>Tránh</em>: "LLM tự chấm điểm", "người đọc bằng mắt".</p>
+
+<p><strong>Fail-to-Pass (F2P)</strong>:<br>
+Bài kiểm thử thất bại ở trạng thái mã nguồn ban đầu (chứng minh lỗi đang tồn tại) và phải chuyển sang trạng thái thành công sau khi agent sửa xong (chứng minh lỗi đã được giải quyết triệt để).<br>
+<em>Tránh</em>: "unit test thông thường", "smoke test".</p>
+
+<p><strong>Pass-to-Pass (P2P)</strong>:<br>
+Toàn bộ các bài kiểm thử hồi quy cũ phải tiếp tục thành công sau khi agent can thiệp, chứng minh agent không phá hỏng các chức năng sẵn có của hệ thống.<br>
+<em>Tránh</em>: "kiểm thử tính năng mới".</p>
+
+</main>
+</body>
+</html>

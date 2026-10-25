@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Skill</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Skill · cập nhật 2026-10-13 (Claude Code 2.1.296) · <a href="../lessons/0006-skill-va-progressive-disclosure.html">Bài 6</a> · <a href="tool-design.html">Thiết kế tool</a> · <a href="glossary.html">Glossary</a></p>
+
+<h1>Skill</h1>
+<p class="subtitle">Tài liệu onboarding nạp lười: thư mục gồm <code>SKILL.md</code>, tài liệu tham chiếu và script. Model quyết định nạp, và chỉ dựa vào description.</p>
+
+<h2>Ba tầng nạp</h2>
+<table>
+  <tr><th>Tầng</th><th>Nạp khi</th><th>Giới hạn</th></tr>
+  <tr><td>1. name + description</td><td>Luôn, ở mọi phiên</td><td>~100 token/skill; cắt ở 1.536 ký tự (description + <code>when_to_use</code>); cả listing ≤ 1% context window, vượt thì bỏ description của skill ít dùng nhất</td></tr>
+  <tr><td>2. Thân SKILL.md</td><td>Model (hoặc người) gọi Skill</td><td>&lt; 500 dòng, &lt; 5.000 token; nằm lại trong hội thoại, không đọc lại; sau compaction giữ 5.000 token đầu/skill, tổng 25.000</td></tr>
+  <tr><td>3. references/, scripts/, assets/</td><td>Khi chỉ dẫn bảo cần</td><td>Tham chiếu sâu 1 tầng; file &gt; 100 dòng có mục lục; script chỉ tốn output</td></tr>
+</table>
+<p class="small">Nguồn: <a href="https://code.claude.com/docs/en/skills">Claude Code — Skills</a>; <a href="https://agentskills.io/specification">Agent Skills spec</a>; <a href="https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices">Best practices</a>. Kiểm tra: <code>/context</code> (hàng Skills), <code>/doctor</code>, <code>/skill-doctor</code>, <code>claude plugin validate .claude/skills</code>.</p>
+
+<h2>Frontmatter</h2>
+<table>
+  <tr><th>Trường</th><th>Chuẩn mở?</th><th>Ghi chú</th></tr>
+  <tr><td><code>name</code></td><td>Có (bắt buộc)</td><td>≤ 64 ký tự, a-z 0-9 và gạch ngang, trùng tên thư mục</td></tr>
+  <tr><td><code>description</code></td><td>Có (bắt buộc)</td><td>≤ 1.024 ký tự; làm gì + khi nào; ngôi thứ ba; từ khóa người dùng hay nói</td></tr>
+  <tr><td><code>license</code>, <code>compatibility</code>, <code>metadata</code>, <code>allowed-tools</code></td><td>Có (tùy chọn)</td><td><code>allowed-tools</code> còn thử nghiệm</td></tr>
+  <tr><td><code>disable-model-invocation</code></td><td>Không (Claude Code)</td><td><code>true</code>: bỏ khỏi listing, model không thấy; chỉ <code>/tên</code> mới chạy</td></tr>
+  <tr><td><code>user-invocable</code></td><td>Không</td><td><code>false</code>: ẩn khỏi menu <code>/</code>, model vẫn gọi được</td></tr>
+  <tr><td><code>argument-hint</code>, <code>arguments</code></td><td>Không</td><td><code>$ARGUMENTS</code>, <code>$0</code>, <code>$name</code></td></tr>
+  <tr><td><code>context: fork</code> + <code>agent</code></td><td>Không</td><td>Chạy skill trong subagent, không thấy lịch sử hội thoại</td></tr>
+  <tr><td><code>hooks</code>, <code>paths</code>, <code>model</code>, <code>effort</code></td><td>Không</td><td>Hook gắn theo skill; <code>paths</code> giới hạn tự nạp theo glob</td></tr>
+</table>
+<p class="small">Trong thân: <code>!`lệnh`</code> chạy trước khi model đọc, output thay vào chỗ đó; lệnh lỗi thì cả skill bị hủy.</p>
+
+<h2>Đặt chỉ dẫn ở đâu</h2>
+<table>
+  <tr><th>Loại</th><th>Chỗ</th></tr>
+  <tr><td>Sự thật cần ở mọi phiên</td><td>CLAUDE.md / AGENTS.md (ngắn)</td></tr>
+  <tr><td>Quy trình thỉnh thoảng cần</td><td>Skill</td></tr>
+  <tr><td>Luật không được bỏ qua</td><td>Hook (có thể khai trong <code>hooks</code> của skill)</td></tr>
+  <tr><td>Năng lực chạm hệ thống ngoài</td><td>MCP tool</td></tr>
+  <tr><td>Bước tất định, dễ sai</td><td>Script trong skill ("cây cầu hẹp" → lệnh chính xác)</td></tr>
+</table>
+
+<h2>Checklist audit</h2>
+<ol>
+  <li>Description có cả <em>làm gì</em> và <em>khi nào</em>, nêu cả cách nói tắt ("kể cả khi tôi chỉ nói…"), và nói khi nào <em>không</em> dùng.</li>
+  <li>Thân &lt; 500 dòng; chỉ dẫn quan trọng nhất nằm ở đầu (sống sót qua compaction).</li>
+  <li>Tham chiếu sâu một tầng; tên file tự mô tả.</li>
+  <li>Phần mong manh đã thành script, và chỉ dẫn nói rõ "chạy" hay "đọc".</li>
+  <li>Đã đo trigger: có câu dương, có câu âm.</li>
+</ol>
+
+<h2>Trigger eval an toàn</h2>
+<pre><code>claude -p "$q" --tools "Skill" --strict-mcp-config --max-turns 1 \
+  --output-format stream-json --verbose |
+jq -r 'select(.subtype=="init") | "tools=" + (.tools|join(","))
+     , (select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | "skill=" + .input.skill)'</code></pre>
+<p class="small"><code>--allowedTools</code> chỉ duyệt trước, không gỡ tool (ở <code>defaultMode: auto</code>, Write vẫn chạy). <code>--tools</code> gỡ built-in nhưng để lại MCP. Luôn kiểm tra <code>tools</code> trong event <code>init</code>.</p>
+
+<h2>Đo trên my-agent (2026-10-13, n = 2 mỗi câu)</h2>
+<table>
+  <tr><th>Skill</th><th>Gọi đúng</th><th>Ghi chú</th></tr>
+  <tr><td>remember, brainstorm, po, report, skill-creator</td><td>2/2</td><td>skill-creator: chọn bản project</td></tr>
+  <tr><td>review-java</td><td>1/2</td><td>lần kia tự trả lời</td></tr>
+  <tr><td>research</td><td>0/2</td><td>undertrigger: model tự trả lời; description 198 ký tự</td></tr>
+  <tr><td>teach</td><td>0/2</td><td><code>disable-model-invocation: true</code> → không có trong listing</td></tr>
+  <tr><td>(câu không cần skill)</td><td>0/2 gọi</td><td>đúng</td></tr>
+</table>
+<p class="small">Context đầu phiên: 26,2k token, trong đó memory files 11,1k và skill listing (~90 skill) 7,8k.</p>
+
+</main>
+</body>
+</html>

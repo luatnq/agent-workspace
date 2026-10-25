@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 2 — Vì sao model bịa, và vì sao prompt không chữa được</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">LLM Foundation · Bài 0002 · 2026-09-20 · ~25 phút · <a href="../reference/glossary.html">Glossary</a> · <a href="0001-llm-la-ham-stateless-tren-token.html">Bài 1</a></p>
+
+<h1>Vì sao model bịa — và vì sao prompt không chữa được</h1>
+<p class="subtitle">Hallucination không phải bug. Nó là hệ quả trực tiếp của cách model được train và được chấm điểm. Hiểu điều đó xong, anh sẽ biết mitigation nào là kiến trúc, mitigation nào chỉ là băng dán.</p>
+
+<div class="callout">
+  <span class="label">Cái anh mang về sau bài này</span>
+  <p>Giải thích được cho team trong 2 phút, không cần toán, <strong>ba tầng nguyên nhân</strong> của hallucination — và với một tính năng cụ thể, chỉ ra được <strong>mitigation nào thuộc về kiến trúc</strong> (đưa fact vào context, gọi tool, cho phép abstain, eval có thưởng abstain) thay vì tin rằng "viết prompt kỹ hơn" là đủ.</p>
+</div>
+
+<h2>1. Tầng pretraining: model tối ưu cho "nghe hợp lý", không phải "đúng"</h2>
+
+<p>Bài 1 đã chốt: model là <code>f(context) → next tokens</code>. Ở tầng pretraining, mục tiêu huấn luyện đúng nghĩa đen là <em>dự đoán token tiếp theo</em> trên corpus khổng lồ.<span class="sidenote-ref"></span> Không có tín hiệu "câu này đúng sự thật" trong objective đó. Model học được phân bố của văn bản trông như thật — và một câu sai nhưng đúng văn phong hoàn toàn nằm trong phân bố ấy.</p>
+<aside class="sidenote"><a href="https://platform.claude.com/docs/en/about-claude/glossary#pretraining">Glossary: Pretraining</a> — "autoregressive language models … are pretrained to predict the next word, given the previous context of text in the document."</aside>
+
+<p>Kalai et al. (OpenAI, 2025) đẩy lập luận này đến cùng: với những fact <em>tùy ý</em> mà corpus chỉ nhắc đúng một lần (ngày sinh của một người ít nổi tiếng, số hiệu một điều luật), không có pattern nào để học — model buộc phải "đoán", và đoán ở tầng này sinh ra lỗi <strong>một cách thống kê tất yếu</strong>, không phải do dữ liệu bẩn hay do model "kém".<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://arxiv.org/abs/2509.04664">Kalai, Nachum, Vempala, Zhang — "Why Language Models Hallucinate" (2025)</a>: hallucination "emerge naturally during model training through statistical pressures" khi dữ liệu không phân biệt được fact với falsehood hợp lý.</aside>
+
+<p>Lilian Weng tách hai loại đáng phân biệt khi anh debug:<span class="sidenote-ref"></span></p>
+<ul>
+  <li><strong>In-context hallucination</strong>: output mâu thuẫn với chính tài liệu anh đưa vào context. Đây là lỗi <em>đọc</em>.</li>
+  <li><strong>Extrinsic hallucination</strong>: output không có căn cứ trong context lẫn trong world knowledge. Đây là lỗi <em>nhớ</em> — model dùng "vague recollection" (bài 1) như thể nó là fact.</li>
+</ul>
+<aside class="sidenote"><a href="https://lilianweng.github.io/posts/2024-07-07-hallucination/">Lilian Weng — "Extrinsic Hallucinations in LLMs" (2024)</a>.</aside>
+
+<h2>2. Tầng post-training: model học <em>văn phong</em> tự tin từ dữ liệu SFT</h2>
+
+<p>Karpathy giải thích cơ chế khiến hallucination thành <em>thói quen</em> (chapter <em>Hallucinations, tool use, knowledge/working memory</em> trong video): dữ liệu SFT là hàng trăm nghìn hội thoại mẫu do người viết, và trong đó assistant gần như <em>luôn trả lời tự tin</em>. Model học cái pattern ấy. Khi gặp câu hỏi về thứ nó không biết, nó không có "cảm giác không biết" để kích hoạt — nó chỉ tiếp tục bắt chước văn phong tự tin bằng nội dung bịa.<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://www.youtube.com/watch?v=7xTGNNLPyMI">Karpathy — Deep Dive into LLMs</a>. Cách chữa ông mô tả (theo cách Meta làm với Llama 3): <em>probe</em> model nhiều lần về một fact; nếu nó không nhất quán → thêm ví dụ SFT trả lời "I don't know" cho đúng fact đó. Tức là dạy model nhận ra ranh giới kiến thức của <em>chính nó</em>.</aside>
+
+<p>Hệ quả cho anh: "cho phép model nói không biết" trong system prompt có tác dụng thật — doc Anthropic xếp nó là kỹ thuật đầu tiên<span class="sidenote-ref"></span> — vì nó mở lại một hành vi đã bị dữ liệu SFT đè xuống. Nhưng nó chỉ hoạt động trong phạm vi model <em>tự biết</em> nó không biết. Với fact nằm ngoài ranh giới đó, model vẫn tự tin sai.</p>
+<aside class="sidenote"><a href="https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/reduce-hallucinations">Reduce hallucinations</a>: "Explicitly give Claude permission to admit uncertainty. This simple technique can drastically reduce false information."</aside>
+
+<h2>3. Tầng eval: hệ sinh thái thưởng đoán mò</h2>
+
+<p>Đây là tầng ít người nói đến và là lập luận chính của Kalai et al.: hallucination <strong>dai dẳng</strong> qua nhiều thế hệ model vì hầu hết benchmark chấm nhị phân — đúng được 1, sai hoặc "không biết" đều 0. Dưới luật chấm đó, một model biết bỏ trống luôn thua model đoán bừa. Model được tối ưu để "thi tốt", nên nó đoán.<span class="sidenote-ref"></span> Tác giả đề xuất sửa luật chấm của chính các benchmark lớn (phạt tự tin sai nặng hơn abstain) thay vì thêm benchmark hallucination riêng.</p>
+<aside class="sidenote"><a href="https://arxiv.org/abs/2509.04664">Kalai et al. 2025</a>: "Like students facing hard exam questions, large language models sometimes guess when uncertain, producing plausible yet incorrect statements instead of admitting uncertainty."</aside>
+
+<p>Anh không sửa được benchmark của các lab. Nhưng anh sở hữu <strong>eval của hệ thống mình</strong> — và đó là bài học kiến trúc: nếu eval của team chỉ đếm "trả lời đúng", team sẽ tối ưu prompt theo hướng khiến bot đoán nhiều hơn. Eval phải có cột "abstain đúng lúc" được điểm. Chủ đề này sẽ có bài riêng.</p>
+
+<h2>4. Một nguyên nhân cơ học riêng: model cần token để "nghĩ"</h2>
+
+<p>Có một loại "bịa" không liên quan đến kiến thức: hỏi <em>17 × 24 bằng bao nhiêu, trả lời số trước rồi giải thích sau</em>, model dễ sai. Karpathy gọi đây là <em>models need tokens to think</em>: mỗi token được sinh ra bằng một lượng tính toán <strong>cố định</strong> (một lượt forward qua mạng). Bắt model đưa đáp án ngay ở token đầu tiên là bắt nó nhồi toàn bộ phép tính vào một bước — không đủ, nên nó "đoán" một con số hợp lý.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Chapter <em>Models need tokens to think</em> trong video Karpathy. Doc Anthropic gọi kỹ thuật đối ứng là <em>chain-of-thought verification</em>: "Ask Claude to explain its reasoning step-by-step before giving a final answer."</aside>
+
+<p>Hai hệ quả trực tiếp cho code của anh:</p>
+<ul>
+  <li><strong>Thứ tự field trong structured output là quyết định kỹ thuật.</strong> Schema <code>{"answer": …, "reasoning": …}</code> ép model trả lời trước khi suy luận. Đảo lại, hoặc bật thinking (bài 1: thinking = output token, có giá).</li>
+  <li><strong>Đếm, cộng, so sánh chuỗi → tool, không phải prompt.</strong> Cùng cơ chế này (cộng với tokenization ở bài 1) giải thích lỗi "strawberry có mấy chữ r". Đừng thuê một next-token predictor làm máy tính.</li>
+</ul>
+
+<h2>5. Bản đồ mitigation: cái nào là kiến trúc, cái nào là băng dán</h2>
+
+<table>
+  <tr><th>Mitigation</th><th>Chữa tầng nào</th><th>Loại</th><th>Ghi chú</th></tr>
+  <tr><td>Đưa fact vào context (RAG, tài liệu đính kèm)</td><td>Extrinsic — thay "vague recollection" bằng working memory</td><td><strong>Kiến trúc</strong></td><td>Đòn bẩy mạnh nhất cho fact thay đổi hoặc riêng tư. Không chữa in-context hallucination.</td></tr>
+  <tr><td>Tool cho tính toán / tra cứu</td><td>Cơ học (tokens to think) + extrinsic</td><td><strong>Kiến trúc</strong></td><td>Chuyển việc ra khỏi model. Deterministic.</td></tr>
+  <tr><td>Cho phép "I don't know" + giới hạn nguồn</td><td>Post-training (mở lại hành vi abstain)</td><td>Prompt</td><td>Rẻ, có tác dụng thật, nhưng chỉ trong ranh giới model tự biết.</td></tr>
+  <tr><td>Grounding bằng quote, citations, retract nếu không tìm được quote</td><td>In-context</td><td>Prompt + kiểm tra</td><td>Doc Anthropic: với tài liệu &gt;20k token, bắt trích quote trước khi phân tích.</td></tr>
+  <tr><td>Reasoning trước answer / thinking</td><td>Cơ học</td><td>Prompt / tham số</td><td>Trả bằng output token.</td></tr>
+  <tr><td>Best-of-N, iterative refinement</td><td>Phát hiện (không chữa)</td><td>Kiểm tra</td><td>Nhân cost lên N. Dùng cho high-stakes.</td></tr>
+  <tr><td>Eval có thưởng abstain</td><td>Tầng eval của <em>hệ thống anh</em></td><td><strong>Kiến trúc</strong></td><td>Không có nó, mọi tối ưu prompt đều trôi về hướng đoán mò.</td></tr>
+  <tr><td>Fine-tune để "dạy" fact mới</td><td>—</td><td><strong>Phản tác dụng</strong></td><td>Gekhman et al. 2024 (qua Weng): học fact mới bằng SFT <em>làm tăng</em> xu hướng hallucinate. Fact thuộc về context, không thuộc về trọng số.</td></tr>
+</table>
+
+<p>Câu doc Anthropic đặt ở cuối trang đáng giữ nguyên trong đầu: các kỹ thuật này "significantly reduce hallucinations, they don't eliminate them entirely." Không có kiến trúc nào đưa xác suất về 0 — chỉ có kiến trúc chấp nhận điều đó và đặt kiểm tra ở đúng chỗ.</p>
+
+<hr>
+
+<h2>Bài tập phán đoán: chọn mitigation cho 4 tình huống</h2>
+<p>Với mỗi tình huống, tự chọn <em>một</em> mitigation chính trước khi mở đáp án. Không có đáp án nào là "viết prompt kỹ hơn".</p>
+
+<details>
+  <summary>A. Bot nội bộ trả lời về chính sách nghỉ phép; chính sách sửa mỗi quý. Bot đang trả lời theo phiên bản cũ.</summary>
+  <p><strong>Đưa chính sách hiện hành vào context</strong> (RAG hoặc đính kèm thẳng nếu ngắn), kèm chỉ thị chỉ dùng tài liệu được cung cấp. Đây là extrinsic hallucination: model đang dùng ký ức mờ từ pretraining (hoặc từ tài liệu tương tự trên internet). Fine-tune theo quý là sai hướng — vừa chậm, vừa làm tăng hallucination (Gekhman).</p>
+</details>
+
+<details>
+  <summary>B. Bot CSKH tính tổng tiền hoàn cho khách có 40 giao dịch lẻ và thỉnh thoảng lệch vài nghìn đồng.</summary>
+  <p><strong>Tool</strong>: model gọi hàm tính tổng (hoặc truy vấn DB), không tự cộng. Đây là lỗi cơ học "tokens to think" cộng với tokenization của số — bật thinking giảm lỗi nhưng không đưa về 0, và với tiền thì "thỉnh thoảng lệch" là không chấp nhận được.</p>
+</details>
+
+<details>
+  <summary>C. Bot dev-docs cho sản phẩm của anh thỉnh thoảng "phát minh" endpoint không tồn tại, tên nghe rất hợp lý.</summary>
+  <p>Hai lớp: <strong>giới hạn nguồn</strong> ("chỉ dùng OpenAPI spec được cung cấp") kết hợp <strong>cho phép nói không có</strong>; rồi <strong>kiểm tra bằng citation</strong>: mỗi endpoint trong câu trả lời phải trỏ được về một dòng trong spec, không có thì bỏ. Endpoint "nghe hợp lý" là đúng chân dung hallucination tầng pretraining — model sinh ra thứ nằm trong phân bố tên API.</p>
+</details>
+
+<details>
+  <summary>D. Team báo cáo "prompt mới tăng accuracy từ 82% lên 88%" nhưng số complaint về câu trả lời sai lại tăng.</summary>
+  <p><strong>Sửa eval</strong>: accuracy đang chấm nhị phân, nên prompt mới nhiều khả năng khiến bot <em>đoán nhiều hơn</em> thay vì abstain — đúng cơ chế Kalai et al. mô tả. Thêm cột "abstain đúng lúc" và phạt "tự tin sai" nặng hơn "không biết". Đây không phải bug của prompt; là bug của thước đo.</p>
+</details>
+
+<hr>
+
+<h2>Kiểm tra nhanh</h2>
+<p class="quiz-score" data-quiz-score></p>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Ở tầng pretraining, gốc rễ khiến model có thể sinh ra câu sai nhưng nghe hợp lý là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Model chỉ đoán token tiếp</li>
+    <li>Tokenizer cắt từ sai chỗ</li>
+    <li>Context window quá ngắn hạn</li>
+    <li>Temperature mặc định quá cao</li>
+  </ul>
+  <p class="quiz-explain">Objective pretraining là dự đoán token kế tiếp, không có tín hiệu "đúng sự thật". Với fact tùy ý xuất hiện một lần trong corpus, đoán sai là tất yếu thống kê (Kalai et al.).</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Theo Kalai et al. (2025), vì sao hallucination vẫn dai dẳng qua nhiều thế hệ model dù các lab biết rõ vấn đề?</p>
+  <ul class="quiz-options">
+    <li data-correct>Benchmark thưởng đoán mò</li>
+    <li>Model thiếu data train</li>
+    <li>RLHF làm model lười</li>
+    <li>Context bị rot dần</li>
+  </ul>
+  <p class="quiz-explain">Chấm nhị phân: "không biết" = 0 điểm như sai. Model được tối ưu để thi tốt nên đoán. Fix đề xuất là sửa luật chấm của benchmark lớn.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Bot phải trả lời đúng theo bộ quy định nội bộ thay đổi hàng tháng. Đòn bẩy kiến trúc đúng là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Nạp tài liệu vào context</li>
+    <li>Fine-tune thêm dữ liệu mới</li>
+    <li>Tăng effort lẫn thinking lên</li>
+    <li>Hạ temperature xuống bằng không</li>
+  </ul>
+  <p class="quiz-explain">Fact thay đổi thuộc về working memory (context), không thuộc về trọng số. Fine-tune fact mới còn làm tăng hallucination (Gekhman et al. 2024). Thinking và temperature không thêm kiến thức.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Structured output với schema <code>{"answer": …, "reasoning": …}</code> đúng thứ tự đó cho bài toán cần tính toán. Vấn đề nằm ở đâu?</p>
+  <ul class="quiz-options">
+    <li data-correct>Answer phải ra trước reasoning</li>
+    <li>JSON tốn nhiều token hơn</li>
+    <li>Reasoning làm answer sai lệch</li>
+    <li>Model không hiểu JSON schema</li>
+  </ul>
+  <p class="quiz-explain">Mỗi token là một lượng tính toán cố định. Ép answer ra trước là ép model tính xong trong một bước — nó sẽ đoán. Đảo thứ tự field hoặc bật thinking.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Bot cần cộng tổng tiền hoàn của 40 giao dịch, sai số bằng 0. Cách đúng?</p>
+  <ul class="quiz-options">
+    <li data-correct>Gọi tool tính toán</li>
+    <li>Bật thinking mức max</li>
+    <li>Nhắc model cẩn thận</li>
+    <li>Đưa bảng vào context</li>
+  </ul>
+  <p class="quiz-explain">Thinking giảm lỗi nhưng không về 0; bảng trong context chỉ giải quyết "biết số nào", không giải quyết "cộng đúng". Số học deterministic là việc của tool.</p>
+</div>
+
+<hr>
+
+<h2>Đọc thêm — primary source cho bài này</h2>
+<p>Xem tiếp video Karpathy hai chapter: <strong>Hallucinations, tool use, knowledge/working memory</strong> (nếu chưa xem ở bài 1) và <strong>Models need tokens to think</strong> — khoảng 30 phút. Nếu muốn đọc thay vì xem: <a href="https://arxiv.org/abs/2509.04664">abstract và phần giới thiệu của Kalai et al.</a> (10 phút) đủ để nắm lập luận "eval thưởng đoán mò".</p>
+
+<div class="callout">
+  <span class="label">Hỏi tôi</span>
+  <p>Muốn áp bản đồ mitigation vào một tính năng thật của team, hay còn lấn cấn chỗ "abstain chỉ hoạt động trong ranh giới model tự biết" — hỏi trong phiên <code>/teach</code>. Bài tiếp theo dự kiến: <strong>tool-use loop</strong> — cơ chế thực sự đứng sau hai chữ "gọi tool" mà bài này dùng rất thoải mái.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0001-llm-la-ham-stateless-tren-token.html">← Bài 1</a>
+  <a href="0003-tool-use-loop.html">Bài 3 →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

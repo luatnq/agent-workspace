@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 8 — CLAUDE.md vs AGENTS.md: cái gì đặt ở đâu</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0008 · Module 4 (CS146S W4) · 2026-10-25 · ~40 phút · <a href="0007-agent-memory.html">Bài 7</a> · <a href="../reference/instruction-files.html">Cheat sheet instruction files</a> · <a href="../reference/memory.html">Cheat sheet memory</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>CLAUDE.md vs AGENTS.md: cái gì đặt ở đâu</h1>
+<p class="subtitle">Khi làm việc một mình, quăng mọi thứ vào <code>CLAUDE.md</code> là xong. Nhưng khi đưa coding agent vào team—nơi người dùng Claude Code, người dùng Cursor, người dùng Antigravity—file instruction nhanh chóng biến thành bãi rác: trùng lặp, mâu thuẫn và phá vỡ prompt cache. Bài này giúp anh thiết kế kiến trúc instruction file chuẩn công nghiệp: phân định ranh giới, bảo vệ cache prefix và chắt lọc quy ước thực sự có giá trị.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Thiết lập mô hình Single Source of Truth giữa <code>AGENTS.md</code> (dùng chung cho cả team) và các file riêng của harness (<code>CLAUDE.md</code>, <code>GEMINI.md</code>). Giải thích vì sao tóm tắt kiến trúc repo dài dòng là phản tác dụng dựa trên nghiên cứu thực nghiệm. Tối ưu cấu trúc file để bảo vệ Prompt Caching, và viết một bản <code>AGENTS.md</code> chuẩn dưới 150 dòng cho repo Spring Boot công việc.</p>
+</div>
+
+<h2>0. Khởi động</h2>
+<p>Một câu ôn bài 7, và một câu đoán trước. Đáp án câu đoán nằm ở mục 2.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Bài 7 anh đã đúng 4/4 trắc nghiệm. Câu ôn này kiểm tra lại nguyên lý cốt lõi trước khi sang tầng instruction file.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Ở bài 7, vì sao kiến trúc bộ nhớ Two-tier (Index nạp sẵn, Detail nạp lười) lại vượt trội hơn việc nhồi toàn bộ thông tin cá nhân vào context ở đầu phiên?</p>
+  <ul class="quiz-options">
+    <li data-correct>Tiết kiệm chi phí token và tránh làm loãng khả năng chú ý của model</li>
+    <li>Tự động giải quyết triệt để mọi mâu thuẫn ký ức không cần can thiệp</li>
+    <li>Cho phép model tự động cập nhật mã nguồn mà không cần xin phép người</li>
+    <li>Bảo vệ dữ liệu hoàn toàn an toàn trước mọi nguy cơ bị prompt injection</li>
+  </ul>
+  <p class="quiz-explain">Nhồi nhét mọi thứ vào context gây tốn tiền (Context Tax) và dẫn đến hiện tượng "Lost in the Middle". Với instruction file cũng hoàn toàn tương tự: một file <code>AGENTS.md</code> dài 1.000 dòng sẽ bị tính tiền ở mọi lượt chat và làm cùn khả năng suy luận của model.</p>
+</div>
+
+<details>
+  <summary>Đoán trước: trong một bài báo thực nghiệm đo lường trên hàng trăm task SWE-bench, loại nội dung nào trong file AGENTS.md làm tăng chi phí token trên 20% nhưng gần như không giúp ích gì cho tỉ lệ hoàn thành task của agent? Viết ra rồi mới mở.</summary>
+  <p>Giữ câu trả lời của anh. Mục 2 sẽ phân tích kết quả nghiên cứu từ paper "Evaluating AGENTS.md".</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Bối cảnh: từ file cá nhân đến quy ước của cả team</h2>
+
+<p>Trước hết, hãy nhìn vào sự tiến hóa của instruction file:</p>
+<ul>
+  <li>Năm 2024, Claude Code giới thiệu <code>CLAUDE.md</code>: một file markdown đặt ở root repo, được harness tự động đọc và đính kèm vào lượt prompt của user.</li>
+  <li>Sau đó, mỗi công cụ AI lại đẻ ra một file riêng: Cursor có <code>.cursorrules</code>, Copilot có <code>.github/copilot-instructions.md</code>, Antigravity có <code>GEMINI.md</code>, Windsurf có <code>.windsurfrules</code>.</li>
+  <li>Hệ quả trong team kỹ thuật: <strong>Rule Drift (Trôi dạt quy tắc)</strong>. Khi một lệnh build thay đổi hoặc team đổi từ Java 17 sang Java 21, người sửa file này nhưng quên sửa file kia. Agent của thành viên này chạy một kiểu, agent của thành viên khác chạy kiểu khác.</li>
+</ul>
+
+<p>Để giải quyết bài toán phân mảnh này, cộng đồng và các hãng (OpenAI Codex, Antigravity, Amp, Cursor) đã chuẩn hóa về một file chung: <strong><code>AGENTS.md</code></strong>. Đây là chuẩn mở, đặt tại root repository, đóng vai trò hợp đồng giao tiếp giữa codebase và <em>bất kỳ coding agent nào</em> bước vào làm việc.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">OpenAI Codex, <a href="https://github.com/openai/codex/blob/main/codex-rs/models-manager/prompt.md">Codex CLI system prompt</a>. Hệ thống chính thức quy định: <code>AGENTS.md</code> là nguồn chân lý duy nhất trong repo.</aside>
+
+<p>Với dân backend, kiến trúc này tương tự như <strong>Spring Configuration</strong>: <code>AGENTS.md</code> là <code>application.yml</code> gốc (chứa toàn bộ quy ước chung bất biến của hệ thống); còn <code>CLAUDE.md</code> hay <code>GEMINI.md</code> giống như profile-specific config (<code>application-claude.yml</code>) chỉ chứa phần mapping tool/subagent riêng của harness đó.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+  subgraph RepoRoot["ROOT REPOSITORY (Được commit vào Git)"]
+    direction TB
+    AGENTS["AGENTS.md (Single Source of Truth)<br/>• Lệnh build &amp; test chuẩn<br/>• Non-standard conventions<br/>• Ranh giới kiến trúc &amp; domain"]
+
+    subgraph HarnessAdapters["Harness Adapters (Rất mỏng)"]
+      direction LR
+      CLAUDE["CLAUDE.md (Claude Code)<br/>@AGENTS.md<br/>+ Agent routing table"]
+      GEMINI["GEMINI.md (Antigravity)<br/>Imports AGENTS.md<br/>+ Tool mapping"]
+      CURSOR[".cursorrules (Cursor)<br/>Imports AGENTS.md"]
+    end
+  end
+
+  AGENTS --> CLAUDE
+  AGENTS --> GEMINI
+  AGENTS --> CURSOR
+</pre>
+<figcaption>Hình 1. Kiến trúc Single Source of Truth cho instruction files. <code>AGENTS.md</code> chứa quy ước bất biến cho toàn team. Các file theo harness chỉ đóng vai trò adapter rất mỏng trỏ về file gốc.</figcaption>
+</figure>
+
+<p><strong>Điều cần nhớ:</strong> Đừng viết lại quy tắc chung vào từng file riêng của harness. Đặt toàn bộ chân lý của repo vào <code>AGENTS.md</code>, và dùng các file harness (như <code>CLAUDE.md</code>) làm adapter mỏng trỏ về nó.</p>
+
+<h2>2. Bằng chứng thực nghiệm: bài học từ "Evaluating AGENTS.md" (2026)</h2>
+
+<p>Rất nhiều kỹ sư khi viết instruction file thường cố gắng "nhồi nhét" toàn bộ tài liệu kiến trúc hệ thống, sơ đồ quan hệ database và mô tả từng thư mục vào <code>AGENTS.md</code>. Họ tưởng rằng cung cấp càng nhiều thông tin thì agent càng thông minh. Đây là một ngộ nhận chết người.</p>
+
+<p>Trong bài báo khoa học <em>"Evaluating AGENTS.md"</em> (Gloaguen et al., 2026), các tác giả đã chạy thử nghiệm toàn diện trên các benchmark lập trình thực tế (SWE-bench) và đưa ra những số liệu định lượng gây giật mình:<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Gloaguen et al., <a href="https://arxiv.org/abs/2602.11988">"Evaluating AGENTS.md"</a>, 2026. Một trong những nghiên cứu định lượng hiếm hoi đo lường tác động thật sự của context files lên hiệu năng coding agent.</aside>
+
+<blockquote>
+<em>"Repository overviews and architectural summaries do not improve agent task completion rates, while increasing context token consumption by more than 20%."</em>
+<br><strong>Tạm dịch:</strong> "Phần tổng quan kho mã và tóm tắt kiến trúc không hề cải thiện tỉ lệ hoàn thành nhiệm vụ của agent, trong khi làm tăng lượng token tiêu thụ trong ngữ cảnh hơn 20%."
+</blockquote>
+
+<p>Vì sao lại có nghịch lý này?</p>
+<ol>
+  <li><strong>Model có tool để tự khám phá:</strong> Coding agent đã có sẵn các tool mạnh mẽ: <code>ls</code>, <code>find</code>, <code>grep</code>, <code>view_file</code>. Khi cần biết file nào nằm ở đâu, agent tự chạy lệnh chỉ tốn vài chục token. Nhồi một bản đồ 500 dòng vào <code>AGENTS.md</code> buộc model phải đọc lại bản đồ đó ở <em>mọi lượt chat</em>, kể cả khi nó chỉ sửa một câu typo.</li>
+  <li><strong>Khả năng tuân thủ suy giảm khi file quá dài:</strong> Khi file vượt quá 150–200 dòng, các chỉ dẫn quan trọng (như lệnh chạy test trước khi commit) bị chìm vào giữa văn bản (hiện tượng Lost in the Middle). Model bắt đầu "chọn bừa" chỉ dẫn để tuân theo.</li>
+</ol>
+
+<p>Vậy cái gì <strong>thật sự có giá trị</strong> trong <code>AGENTS.md</code>? Bài báo chỉ ra:</p>
+<ul>
+  <li><strong>Những quy ước khác thường (Non-standard / Counter-intuitive Conventions):</strong> Thứ mà model không thể tự đoán từ kiến thức pre-training. Ví dụ: <em>"Trong repo này, chúng tôi không dùng <code>@Transactional</code> của Spring mà dùng custom wrapper <code>TxHelper.run()</code>"</em>; hoặc <em>"Mọi ID trả về cho client phải là Hashids, không dùng raw Long"</em>.</li>
+  <li><strong>Lệnh build và test chính xác:</strong> Giúp agent vào việc ngay mà không tốn 3–4 lượt thử sai với <code>gradle test</code> hay <code>mvn test</code>.</li>
+  <li><strong>Ranh giới cấm chạm (Forbidden boundaries):</strong> Những thư mục cấm sửa (như <code>db/migration/</code> đã merge, schema protobuf dùng chung).</li>
+</ul>
+
+<p><strong>Điều cần nhớ:</strong> Đừng biến <code>AGENTS.md</code> thành sách giáo khoa hay bản đồ repo. Chỉ ghi: lệnh chạy, quy ước khác thường không thể tự đoán, và ranh giới cấm vi phạm. Giữ file dưới 150 dòng.</p>
+
+<h2>3. Prompt Caching: đừng làm vỡ chiếc bình pha lê</h2>
+
+<p>Đến đây anh có thể tự hỏi: nếu <code>AGENTS.md</code> được nạp vào mọi phiên, nó ảnh hưởng thế nào đến túi tiền và độ trễ của hệ thống?</p>
+
+<p>Hãy nhớ lại bài học về Prompt Caching ở khóa <em>llm-foundation</em>. Các model hàng đầu (Claude 3.5/3.7, Gemini 1.5/2.0) sử dụng cơ chế <strong>Prefix Caching</strong>:<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic Prompt Caching</a> và Gemini Context Caching: đọc từ cache rẻ hơn 90% so với token thông thường và giảm 80% độ trễ TTFT.</aside>
+
+<p>Phép so sánh backend hoàn hảo ở đây là <strong>Docker Layer Caching</strong>. Khi anh build một Docker image:</p>
+<pre><code>FROM openjdk:21-slim
+COPY pom.xml .
+RUN mvn dependency:go-offline  # Layer này rất ổn định, được cache!
+COPY src/ ./src/              # Layer này hay đổi</code></pre>
+<p>Nếu anh đặt một dòng lệnh sinh ngày giờ ngẫu nhiên (<code>RUN date &gt; /build-time.txt</code>) lên trước lệnh <code>dependency:go-offline</code>, toàn bộ layer cache phía sau sẽ bị <strong>vỡ hoàn toàn (cache invalidation)</strong>. Mỗi lần build anh phải tải lại toàn bộ file jar từ Maven Central!</p>
+
+<p>Với LLM Prompt Cache cũng y hệt như vậy. Prompt được cache từ trên xuống dưới (Prefix Match):</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 680 180" role="img" aria-label="So sánh thiết kế bảo vệ prompt cache và thiết kế làm vỡ prompt cache">
+  <!-- Case 1: Cache Hit -->
+  <rect x="10" y="20" width="320" height="145" rx="6" class="d-box"/>
+  <text x="170" y="42" class="d-small d-center d-strong">THIẾT KẾ ĐÚNG: Cache Hit (Rẻ 90%)</text>
+  <rect x="25" y="55" width="290" height="25" rx="3" class="d-accent-fill"/>
+  <text x="170" y="72" class="d-small d-center">System Prompt Cố Định</text>
+  <rect x="25" y="85" width="290" height="25" rx="3" class="d-accent-fill"/>
+  <text x="170" y="102" class="d-small d-center">AGENTS.md Tĩnh &amp; Ổn Định</text>
+  <rect x="25" y="115" width="290" height="25" rx="3" class="d-fill"/>
+  <text x="170" y="132" class="d-small d-center">User Prompt &amp; Messages Đổi</text>
+  <text x="170" y="155" class="d-muted d-center">Breakpoint cache ăn sâu: tiết kiệm tối đa</text>
+
+  <!-- Case 2: Cache Miss -->
+  <rect x="350" y="20" width="320" height="145" rx="6" class="d-box"/>
+  <text x="510" y="42" class="d-small d-center d-strong">SAI LẦM: Cache Invalidation (Mất tiền)</text>
+  <rect x="365" y="55" width="290" height="25" rx="3" class="d-accent-fill"/>
+  <text x="510" y="72" class="d-small d-center">System Prompt Cố Định</text>
+  <rect x="365" y="85" width="290" height="25" rx="3" class="d-bad-fill" style="fill: var(--color-bad-soft, #ffebee); stroke: var(--color-bad, #c62828);"/>
+  <text x="510" y="102" class="d-small d-center" style="fill: var(--color-bad, #c62828);">AGENTS.md có ngày giờ động / git branch!</text>
+  <rect x="365" y="115" width="290" height="25" rx="3" class="d-box"/>
+  <text x="510" y="132" class="d-small d-center">Toàn bộ phần sau bị tính giá 100%</text>
+  <text x="510" y="155" class="d-muted d-center">Vỡ cache từ dòng 2: trả tiền full mọi lượt</text>
+</svg>
+<figcaption>Hình 2. Cơ chế Prefix Cache. Bất kỳ thông tin biến động nào đặt ở phần đầu context (như instruction file) đều làm vỡ cache của toàn bộ các lượt đàm thoại và tool gọi sau đó.</figcaption>
+</figure>
+
+<h3>Nguyên tắc vàng để bảo vệ Cache:</h3>
+<ul>
+  <li><code>AGENTS.md</code> phải là <strong>nội dung tĩnh</strong>. Tuyệt đối không nhúng script chạy dynamic (như `date`, kết quả `git status`, hay username biến động) vào file instruction.</li>
+  <li>Không sửa <code>AGENTS.md</code> cho các mục tiêu vụn vặt theo ngày. Việc ngắn hạn để ở prompt hoặc memory.</li>
+  <li>Khi chia nhỏ file, phần tĩnh nhất luôn nạp trước, phần hay biến động nạp sau.</li>
+</ul>
+
+<p><strong>Điều cần nhớ:</strong> <code>AGENTS.md</code> nằm ở vị trí đầu của context prefix. Giữ nó tĩnh và ổn định để hưởng 90% giảm giá từ Prompt Caching. Đưa dữ liệu động vào đây là tự đốt tiền của team.</p>
+
+<h2>4. Bảng phân định: cái gì đặt ở đâu?</h2>
+
+<p>Giờ đây anh đã nắm trọn vẹn 5 tầng tùy biến của một coding agent hiện đại. Hãy dùng bảng ma trận này làm kim chỉ nam mỗi khi cần thêm một chỉ dẫn vào codebase:</p>
+
+<table>
+  <tr><th>Nơi đặt</th><th>Tần suất nạp</th><th>Phạm vi áp dụng</th><th>Cái gì NÊN đặt</th><th>Cái gì CẤM đặt</th></tr>
+  <tr>
+    <td><strong><code>AGENTS.md</code></strong><br>(Root repo)</td>
+    <td>Mọi phiên, mọi turn</td>
+    <td>Toàn bộ team &amp; mọi agent</td>
+    <td>Lệnh build/test chuẩn; quy ước code khác thường; ranh giới kiến trúc cấm vi phạm. Dưới 150 dòng.</td>
+    <td>Sở thích cá nhân; checklist dài dòng; quy trình phát hành phức tạp; tóm tắt repo thừa thãi.</td>
+  </tr>
+  <tr>
+    <td><strong><code>Sub-AGENTS.md</code></strong><br>(Thư mục con)</td>
+    <td>Chỉ khi agent thao tác trong thư mục đó</td>
+    <td>Module / Microservice cụ thể</td>
+    <td>Quy ước riêng của service (ví dụ: service Payment dùng mô hình Saga; service Report dùng read-only replica).</td>
+    <td>Lặp lại các quy ước chung đã có ở root.</td>
+  </tr>
+  <tr>
+    <td><strong>Harness Adapter</strong><br>(<code>CLAUDE.md</code>, <code>GEMINI.md</code>)</td>
+    <td>Mọi phiên của harness đó</td>
+    <td>Riêng harness tương ứng</td>
+    <td>Import <code>@AGENTS.md</code>; cấu hình subagent đặc thù; mapping tool; quy tắc riêng của IDE.</td>
+    <td>Quy ước nghiệp vụ hoặc lệnh build dự án (làm rò rỉ và mất đồng bộ với agent khác).</td>
+  </tr>
+  <tr>
+    <td><strong>Skill</strong><br>(<code>.claude/skills/</code>)</td>
+    <td>Chỉ nạp khi model thấy khớp description</td>
+    <td>Quy trình / Tác vụ cụ thể</td>
+    <td>Playbook release; quy trình review code chuyên sâu; checklist audit security; script tự động hóa.</td>
+    <td>Luật bắt buộc phải tuân thủ ở mọi lần gõ phím.</td>
+  </tr>
+  <tr>
+    <td><strong>Hook</strong><br>(Lifecycle trigger)</td>
+    <td>Harness tự chạy trước/sau khi gọi tool</td>
+    <td>Bắt buộc 100% tất định</td>
+    <td>Chặn sửa file migration; tự chạy linter/spotless sau khi edit; chặn push nhánh main.</td>
+    <td>Chỉ dẫn mang tính giải thích, ngữ nghĩa.</td>
+  </tr>
+  <tr>
+    <td><strong>Memory</strong><br>(<code>memory/</code>)</td>
+    <td>Nạp lười qua index 1 dòng</td>
+    <td>Cá nhân kỹ sư</td>
+    <td>Sở thích cá nhân (thích giải thích ngắn gọn); mục tiêu ngắn hạn; bài học kinh nghiệm sau sự cố.</td>
+    <td>Quy chuẩn chung của team.</td>
+  </tr>
+</table>
+
+<p><strong>Điều cần nhớ:</strong> Sự thật chung → <code>AGENTS.md</code>; quy trình tác vụ → <code>Skill</code>; luật sắt cấm vi phạm → <code>Hook</code>; sở thích cá nhân → <code>Memory</code>. Không bao giờ để quy ước chung bị phân mảnh sang các file harness riêng lẻ.</p>
+
+<h2>5. Thực hành: Viết AGENTS.md chuẩn công nghiệp cho repo công việc (~20 phút)</h2>
+
+<p>Bài tập hôm nay gồm hai bước: audit repo hiện tại và soạn thảo một bản <code>AGENTS.md</code> sẵn sàng đưa vào production cho team của anh.</p>
+
+<p><strong>Bước 1 — Audit file hiện tại của my-agent (5 phút).</strong><br>
+Mở và đọc hai file [AGENTS.md](file:///Users/luatnq/workspace/my-agent/AGENTS.md) và [CLAUDE.md](file:///Users/luatnq/workspace/my-agent/CLAUDE.md) trong repo này:</p>
+<pre><code>wc -l AGENTS.md CLAUDE.md GEMINI.md</code></pre>
+<p>Kiểm tra:</p>
+<ol>
+  <li><code>AGENTS.md</code> có bị vượt quá 150 dòng không?</li>
+  <li>Các file riêng (`CLAUDE.md`, `GEMINI.md`) đã thực hiện đúng vai trò adapter mỏng chưa, hay có quy tắc chung nào bị lọt vào đó?</li>
+  <li>Các dòng import context (`@context/profile.md`, `@memory/MEMORY.md`) có đang được đặt ở vị trí hợp lý không?</li>
+</ol>
+
+<p><strong>Bước 2 — Viết AGENTS.md cho repo Spring Boot công việc (15 phút).</strong><br>
+Hãy chọn một repo thực tế mà anh đang lead hoặc bảo trì (dịch vụ thanh toán, core banking, microservice). Soạn thảo một file nháp <code>AGENTS.md</code> cho repo đó tuân thủ cấu trúc 4 phần chuẩn mực sau (lưu vào file nháp hoặc ghi chú của anh):</p>
+
+<pre><code class="language-markdown"># {Tên Repo / Service} — Agent Guidelines
+
+## 1. Build &amp; Test Commands (Phải chạy được ngay)
+- Build: `./gradlew clean compileJava` (hoặc `mvn clean compile`)
+- Test nhanh (unit test): `./gradlew test --tests "*UnitTest"`
+- Test toàn bộ: `./gradlew check`
+- Linter / Format: `./gradlew spotlessApply`
+
+## 2. Non-standard Conventions (Những thứ model KHÔNG THỂ đoán)
+- Không dùng raw `@Transactional` trên controller/listener; chỉ dùng ở Service layer.
+- Mọi entity bắt buộc kế thừa `BaseAuditEntity` (tự điền created_by, updated_at).
+- Khi gọi HTTP sang service khác, bắt buộc dùng `InternalServiceClient` có sẵn CircuitBreaker, không tự tạo `RestTemplate` hay `WebClient` mới.
+- Xử lý tiền tệ: bắt buộc dùng `BigDecimal` với scale 2 và `RoundingMode.HALF_UP`, cấm dùng `double`/`float`.
+
+## 3. Forbidden Boundaries (Ranh giới cấm vi phạm)
+- CẤM tự ý sửa các file trong `src/main/resources/db/migration/V*.sql` đã có trên nhánh main.
+- CẤM commit secrets, API keys, credentials vào file `application.yml` (dùng biến môi trường).
+- Không tự ý thêm dependency mới vào `build.gradle` mà không có yêu cầu rõ ràng.
+
+## 4. Code Modification Rules
+- Trước khi báo xong task: bắt buộc chạy `./gradlew spotlessApply &amp;&amp; ./gradlew test`.
+- Giữ nguyên các comment và docstring hiện có không liên quan đến thay đổi.</code></pre>
+
+<p>Trả lời ba câu hỏi thực hành:</p>
+<ol>
+  <li>Bước 1: <code>AGENTS.md</code> của `my-agent` hiện có bao nhiêu dòng? Có quy ước nào vi phạm quy tắc "không ghi thông tin biến động" không?</li>
+  <li>Bước 2: Trong bản <code>AGENTS.md</code> anh vừa viết cho repo công việc, đâu là <strong>quy ước khác thường (non-standard convention)</strong> quan trọng nhất mà nếu không dặn, agent chắc chắn sẽ làm sai theo thói quen mặc định?</li>
+  <li>Nếu một dev trong team dùng Cursor và muốn tạo file <code>.cursorrules</code>, anh sẽ hướng dẫn họ viết nội dung file đó như thế nào để không bị trôi dạt quy tắc so với <code>AGENTS.md</code>?</li>
+</ol>
+
+<details>
+  <summary>Gợi ý (mở sau khi đã làm)</summary>
+  <p><strong>Câu 2:</strong> Trong các dự án Spring Boot ngân hàng/doanh nghiệp, lỗi hay gặp nhất của agent là: tự ý dùng `@Autowired` field injection thay vì constructor injection (Lombok `@RequiredArgsConstructor`), tự dùng `System.currentTimeMillis()` thay vì `Clock` bean để test được, hoặc tự sinh query SQL không có paging trên bảng hàng triệu record.</p>
+  <p><strong>Câu 3:</strong> Hướng dẫn họ: file <code>.cursorrules</code> chỉ cần đúng 1 chỉ dẫn ngắn: <em>"Tuân thủ nghiêm ngặt toàn bộ quy ước, lệnh build và coding standards được định nghĩa trong AGENTS.md tại root repository"</em>. Không copy paste lại nội dung.</p>
+</details>
+
+<h2>6. Kiểm tra cuối bài</h2>
+<p>Ba câu trắc nghiệm tình huống và hai câu tự diễn đạt.</p>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Nghiên cứu thực nghiệm "Evaluating AGENTS.md" (Gloaguen et al., 2026) chỉ ra rằng nội dung nào sau đây trong context file đem lại ít giá trị nhất cho coding agent?</p>
+  <ul class="quiz-options">
+    <li data-correct>Mô tả tổng quan kiến trúc và tóm tắt cấu trúc toàn bộ repo</li>
+    <li>Quy ước đặt tên cùng cấu trúc thư mục khác thường của dự án</li>
+    <li>Lệnh chạy kiểm thử và quy trình kiểm tra mã nguồn trước khi commit</li>
+    <li>Những cạm bẫy kỹ thuật đặc thù và cách khắc phục lỗi thường gặp</li>
+  </ul>
+  <p class="quiz-explain">Agent đã có sẵn các tool như ls, grep, find để tự khám phá repo khi cần. Nhồi nhét mô tả kiến trúc dài dòng làm tăng token hơn 20% mà không tăng tỉ lệ giải quyết task, thậm chí làm loãng context.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Về mặt Prompt Caching (Prefix Cache), vì sao việc chèn ngày giờ động hoặc trạng thái git vào <code>AGENTS.md</code> lại là một sai lầm nghiêm trọng?</p>
+  <ul class="quiz-options">
+    <li data-correct>Nội dung biến động làm vô hiệu hóa toàn bộ cache breakpoint phía sau</li>
+    <li>Model sẽ không hiểu được định dạng thời gian và dừng phiên làm việc</li>
+    <li>Gây ra lỗi biên dịch mã nguồn khi agent thực thi build dự án</li>
+    <li>Làm cho dung lượng file vượt quá giới hạn tối đa năm trăm dòng</li>
+  </ul>
+  <p class="quiz-explain">Prompt cache hoạt động theo nguyên tắc Prefix Match từ trên xuống dưới (giống Docker layer cache). Một thông tin biến động ở đầu context làm vỡ toàn bộ cache của các block hội thoại và kết quả tool phía sau, mất sạch 90% ưu đãi chi phí.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Trong một repo microservices lớn, team nên tổ chức <code>AGENTS.md</code> theo mô hình nào để tối ưu context và tránh xung đột quy tắc giữa các service?</p>
+  <ul class="quiz-options">
+    <li data-correct>AGENTS.md chung ở root cho toàn repo và các file con ở từng service</li>
+    <li>Gom toàn bộ mọi quy tắc chi tiết vào duy nhất một root AGENTS.md</li>
+    <li>Mỗi service có file độc lập hoàn toàn không chia sẻ quy tắc chung</li>
+    <li>Chuyển toàn bộ quy ước vào các biến môi trường thay vì file markdown</li>
+  </ul>
+  <p class="quiz-explain">Mô hình phân cấp (Hierarchical Discovery): file root chứa quy ước chung toàn repo; từng service có file con chứa quy ước đặc thù và chỉ được nạp khi agent làm việc bên trong thư mục của service đó.</p>
+</div>
+
+<details>
+  <summary>Tự diễn đạt 1: Giải thích cho một thành viên mới trong team vì sao họ không được tự tiện paste tài liệu README dài 2.000 dòng vào AGENTS.md. Dùng từ ngữ kỹ thuật về context và chi phí.</summary>
+  <p>AGENTS.md được harness tự động nhồi vào context ở mọi lượt gọi API của mọi thành viên. Nhồi 2.000 dòng tài liệu (~5.000 token) khiến chi phí mỗi lượt prompt tăng vọt (Context Tax) và làm loãng sự chú ý của model (Lost in the Middle), khiến nó dễ bỏ qua các luật test/build quan trọng. Hơn nữa, agent hoàn toàn có thể tự đọc README bằng tool khi cần, nên việc nhồi sẵn là vừa lãng phí vừa phản tác dụng.</p>
+</details>
+
+<details>
+  <summary>Tự diễn đạt 2: Nối Bài 6 (Skill), Bài 7 (Memory) và Bài 8 (AGENTS.md). Khi nào một mẩu thông tin nên nằm ở AGENTS.md, khi nào nên là Skill, khi nào là Memory?</summary>
+  <p>Nằm ở AGENTS.md khi nó là <strong>sự thật bất biến áp dụng cho toàn bộ dự án và cả team</strong> (lệnh build, quy ước code khác thường, ranh giới cấm). Nằm ở Skill khi nó là <strong>quy trình nhiều bước chỉ cần thỉnh thoảng</strong> (cần nạp lười để tiết kiệm context). Nằm ở Memory khi nó là <strong>sở thích cá nhân hoặc bài học kinh nghiệm thay đổi theo thời gian</strong> của riêng một người dùng.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>Tóm lại</h2>
+<ul>
+  <li><strong>Single Source of Truth:</strong> <code>AGENTS.md</code> ở root là hợp đồng chung cho cả team và mọi AI agent. Các file riêng của harness (<code>CLAUDE.md</code>, <code>GEMINI.md</code>) chỉ là adapter mỏng.</li>
+  <li><strong>Nghiên cứu "Evaluating AGENTS.md":</strong> Tóm tắt kiến trúc repo dài dòng tốn thêm &gt;20% token mà không tăng hiệu quả. Hãy tập trung vào <em>non-standard conventions</em>, lệnh build/test và ranh giới cấm.</li>
+  <li><strong>Bảo vệ Prompt Caching:</strong> <code>AGENTS.md</code> phải là nội dung tĩnh tuyệt đối. Không chèn ngày giờ động, git branch hay biến động làm vỡ prefix cache.</li>
+  <li><strong>Kích thước lý tưởng:</strong> Dưới 150 dòng. Càng ngắn gọn, súc tích thì tỉ lệ tuân thủ càng cao.</li>
+  <li><strong>Phân cấp (Hierarchical):</strong> Dùng root <code>AGENTS.md</code> cho quy ước toàn dự án, và các file con trong thư mục service cho các quy ước cục bộ.</li>
+</ul>
+<p>Bài 9 ta sẽ bước sang một vũ khí cực mạnh để thực thi kỷ luật kỹ thuật mà không phụ thuộc vào trí nhớ của model: <strong>Hooks: lint gate, test gate, guardrail</strong>. Ta sẽ cấu hình hook tự động chạy test và linter sau mỗi lần agent Edit mã nguồn.</p>
+
+<h2>Đọc thêm</h2>
+<p><strong>Nguồn chính:</strong> Đọc bài báo <a href="https://arxiv.org/abs/2602.11988">"Evaluating AGENTS.md"</a> (Gloaguen et al., 2026, khoảng 20 phút), đặc biệt là Section 3 &amp; 4 phân tích nội dung nào trong context file thật sự tạo ra tác động. Sau đó đọc trang <a href="https://code.claude.com/docs/en/best-practices">Claude Code Best Practices</a> phần "Manage context with CLAUDE.md".</p>
+
+<div class="callout">
+  <span class="label">Báo lại cho tôi</span>
+  <p><strong>Bài 8:</strong> (1) Khởi động <strong>x/1</strong> và câu đoán của anh. (2) Cuối bài <strong>y/3</strong>, kèm đáp án đã chọn nếu sai, và 2 câu tự diễn đạt. (3) Ba câu hỏi thực hành của mục 5 (số dòng AGENTS.md hiện tại, non-standard convention anh chọn cho repo công việc, và cách hướng dẫn dev dùng Cursor). Chỗ nào còn vướng, cứ hỏi tôi.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0007-agent-memory.html">← Bài 7: Agent memory</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0009-hooks-lint-test-gate-guardrail.html">Bài 9: Hooks: lint gate &amp; test gate →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/diagram.js"></script>
+</body>
+</html>

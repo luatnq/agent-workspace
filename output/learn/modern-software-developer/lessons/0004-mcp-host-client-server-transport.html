@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 4 — MCP: host, client, server, transport</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0004 · Module 2 (CS146S W2) · 2026-10-07 · ~40 phút · <a href="0003-reppit-va-spec-driven.html">Bài 3</a> · <a href="../reference/mcp.html">Cheat sheet MCP</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>MCP: host, client, server, transport</h1>
+<p class="subtitle">Ở bài 1, bộ tool của agent là thứ harness viết sẵn: Read, Edit, Bash. Muốn agent đọc Jira, query database dev hay gọi API nội bộ thì sao? Viết lại tool cho từng harness là cách cũ. MCP là cách mới: viết một lần, cắm vào harness nào cũng chạy. Hôm nay anh viết server đầu tiên và nhìn tận dây xem nó nói chuyện với Claude Code thế nào.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Viết một MCP server stdio khoảng 40 dòng, cắm vào Claude Code bằng <code>claude mcp add</code>, và đọc được chính xác các message JSON-RPC đi qua lại. Khi một tool MCP hỏng, anh biết lỗi nằm ở tầng nào: transport, protocol, hay trong code của tool.</p>
+</div>
+
+<h2>0. Khởi động</h2>
+<p>Một câu ôn bài 1, và một câu đoán trước. Câu đoán sẽ có đáp án ở mục 4.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Câu 1 ôn "ai thực thi tool" (<a href="0001-ben-trong-coding-agent.html">bài 1</a>, và lỗ cũ ở LR-0004 của llm-foundation), lần này trong bối cảnh MCP. Câu đoán ôn lỗ "đường đi của lỗi trong harness" ở LR-0001.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Claude Code gọi tool <code>mcp__learn__learning_progress</code>. Đoạn code Python của tool đó thực sự chạy ở đâu?</p>
+  <ul class="quiz-options">
+    <li data-correct>Trong process server mà host khởi chạy</li>
+    <li>Trong model, ngay lúc sinh ra tool_use</li>
+    <li>Trên hạ tầng của Anthropic, cạnh model</li>
+    <li>Trong chính process Claude Code đang chạy</li>
+  </ul>
+  <p class="quiz-explain">Vẫn là bài học của bài 1: model chỉ sinh ra yêu cầu <code>tool_use</code>, không chạy gì cả. Với MCP còn thêm một tầng: harness (Claude Code) không tự chạy code của tool mà chuyển yêu cầu sang một process riêng, chính là MCP server. Với transport stdio, process đó do Claude Code khởi chạy trên máy anh.</p>
+</div>
+
+<details>
+  <summary>Đoán trước: tool trong server <code>raise ValueError("Không có chủ đề 'x'. Các chủ đề hiện có: a, b, c")</code>. Model nhận được gì? Viết câu trả lời của anh ra, rồi mới mở.</summary>
+  <p>Chưa có đáp án ở đây. Giữ câu trả lời của anh, mục 4 sẽ cho thấy kết quả thật khi chạy trên máy.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. MCP giải quyết vấn đề gì</h2>
+
+<p>Trước hết, thử nhớ lại thời trước JDBC. Mỗi ứng dụng muốn nói chuyện với Oracle, MySQL, PostgreSQL phải viết code riêng cho từng database. Có N ứng dụng và M database thì cần N×M bộ tích hợp. JDBC cắt bài toán đó: ứng dụng chỉ viết theo một API, còn mỗi vendor cung cấp một driver. N×M thành N+M.</p>
+
+<p>Agent năm 2024 đúng ở tình trạng "trước JDBC". Claude Code, Cursor, Codex, agent tự viết: mỗi bên định nghĩa tool một kiểu. Muốn agent đọc Jira thì mỗi harness lại viết một tích hợp riêng. MCP (Model Context Protocol) là "JDBC cho context của agent": harness nói một giao thức, mỗi hệ thống bên ngoài cung cấp một <strong>server</strong> theo giao thức đó.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Anthropic công bố MCP cuối 2024. Ngày 2025-12-09, Anthropic <a href="https://www.anthropic.com/news/donating-the-model-context-protocol-and-establishing-of-the-agentic-ai-foundation">tặng MCP cho Agentic AI Foundation</a> thuộc Linux Foundation, đồng sáng lập với Block và OpenAI. Tức là giao thức không còn thuộc riêng một vendor nào.</aside>
+
+<p>Phép so sánh này hỏng ở hai chỗ, và cả hai đều quan trọng:</p>
+<ul>
+  <li><strong>Server là một process riêng</strong>, không phải thư viện nạp vào cùng JVM như JDBC driver. Hai bên nói chuyện qua stdin/stdout hoặc HTTP. Vì thế server viết bằng Python vẫn cắm được vào harness viết bằng TypeScript.</li>
+  <li><strong>Người dùng cuối của API là model</strong>, không phải lập trình viên. Description, tên tham số, message lỗi đều là thứ model đọc để quyết định bước tiếp theo. Bài 5 sẽ đi sâu vào điểm này.</li>
+</ul>
+
+<p><strong>Điều cần nhớ:</strong> MCP chuẩn hóa cách harness lấy tool và context từ bên ngoài, biến N×M tích hợp thành N+M. Khác JDBC ở chỗ server là process riêng và người đọc API là model.</p>
+
+<h2>2. Ba vai: host, client, server</h2>
+
+<p>Spec chia hệ thống thành ba vai. Đọc định nghĩa gốc:<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://modelcontextprotocol.io/docs/learn/architecture">MCP — Architecture overview</a>.</aside>
+
+<blockquote>
+  <p><strong>MCP Host</strong>: The AI application that coordinates and manages one or multiple MCP clients.<br>
+  <strong>MCP Client</strong>: A component that maintains a connection to an MCP server and obtains context from an MCP server for the MCP host to use.<br>
+  <strong>MCP Server</strong>: A program that provides context to MCP clients.</p>
+  <p><strong>Tạm dịch:</strong> Host là ứng dụng AI, điều phối và quản lý một hoặc nhiều client. Client là một thành phần giữ kết nối tới một server và lấy context từ server đó cho host dùng. Server là chương trình cung cấp context cho client.</p>
+</blockquote>
+
+<p>Điểm dễ nhầm nhất là quan hệ giữa client và server. Nhiều người nghĩ "Claude Code là một client, nối tới nhiều server". Thật ra spec nói: <em>"The MCP host accomplishes this by creating one MCP client for each MCP server"</em> (tạm dịch: "host làm việc này bằng cách tạo <strong>một client cho mỗi server</strong>"). Mỗi client giữ một kết nối riêng tới đúng một server.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+  subgraph H["Host: Claude Code (một process)"]
+    direction TB
+    M["Model API<br/>(gọi ra Anthropic)"]
+    C1["Client 1"]
+    C2["Client 2"]
+    C3["Client 3"]
+  end
+  C1 -->|"stdio"| S1["learn server<br/>process con trên máy anh"]
+  C2 -->|"stdio"| S2["git server<br/>process con trên máy anh"]
+  C3 -->|"Streamable HTTP"| S3["Jira server của team<br/>chạy trên K8s"]
+</pre>
+<figcaption>Hình 1. Kiến trúc MCP. Hãy nhìn số mũi tên: ba server thì có ba client, mỗi client một kết nối. Model không nối trực tiếp tới server nào; mọi thứ đi qua host. Server local là process con do host khởi chạy; server remote là một service chạy sẵn ở đâu đó.</figcaption>
+</figure>
+
+<p>Vì sao lại một client cho mỗi server? Giống connection pool tách riêng cho từng datasource trong Spring: lỗi hay chậm ở một nguồn không kéo theo các nguồn khác. Mỗi kết nối có version và capability riêng (mục 4). Host cũng giữ quyền quyết định: server nào được tin, tool nào cần hỏi người dùng trước khi chạy.</p>
+
+<p>Spec cũng chia giao thức thành hai tầng, giống cách anh tách HTTP khỏi TCP:</p>
+<ul>
+  <li><strong>Data layer</strong>: nội dung message, dạng JSON-RPC 2.0. Gồm việc trao đổi version, capability, và các primitive ở mục 3.</li>
+  <li><strong>Transport layer</strong>: message đi bằng đường nào (stdio hay HTTP), đóng khung ra sao, xác thực thế nào. Mục 5.</li>
+</ul>
+
+<p><strong>Điều cần nhớ:</strong> host là ứng dụng (Claude Code), client là kết nối bên trong host, server là chương trình cung cấp tool. Một client ứng với đúng một server. Giao thức có hai tầng: data (JSON-RPC) và transport.</p>
+
+<h2>3. Server cung cấp gì: ba primitive, ba người điều khiển</h2>
+
+<p>Server không chỉ cung cấp tool. Spec định nghĩa ba loại "primitive", và cái hay là mỗi loại do <strong>một bên khác nhau</strong> quyết định khi nào dùng:</p>
+
+<table>
+  <tr><th>Primitive</th><th>Là gì</th><th>Ai quyết định dùng</th><th>Method</th></tr>
+  <tr><td><strong>Tools</strong></td><td>Hàm có tác dụng: query, gọi API, ghi dữ liệu</td><td>Model: <em>"model-controlled"</em> (tạm dịch: "do model điều khiển")</td><td><code>tools/list</code>, <code>tools/call</code></td></tr>
+  <tr><td><strong>Resources</strong></td><td>Dữ liệu chỉ đọc có URI: file, schema DB, tài liệu</td><td>Ứng dụng: <em>"application-driven"</em> (tạm dịch: "do ứng dụng chủ động đưa vào")</td><td><code>resources/list</code>, <code>resources/read</code></td></tr>
+  <tr><td><strong>Prompts</strong></td><td>Mẫu prompt có tham số, kiểu một slash command</td><td>Người dùng: <em>"user-controlled"</em> (tạm dịch: "do người dùng chủ động chọn")</td><td><code>prompts/list</code>, <code>prompts/get</code></td></tr>
+</table>
+<p class="small">Nguồn: spec 2026-07-28, các trang <a href="https://modelcontextprotocol.io/specification/2026-07-28/server/tools">tools</a>, <a href="https://modelcontextprotocol.io/specification/2026-07-28/server/resources">resources</a>, <a href="https://modelcontextprotocol.io/specification/2026-07-28/server/prompts">prompts</a>.</p>
+
+<p>Đến đây anh có thể tự hỏi: vậy schema của database dev nên là tool hay resource? Câu trả lời phụ thuộc vào việc ai nên quyết định đưa nó vào context. Nếu muốn model tự tra khi cần, dùng tool <code>describe_table</code>. Nếu anh muốn chủ động gắn schema vào cuộc hội thoại, dùng resource. Trên thực tế, đa số server hiện nay chỉ dùng tools, vì đó là thứ mọi host đều hỗ trợ tốt.</p>
+
+<p>Chiều ngược lại cũng có: server có thể nhờ client làm việc. Đáng nhớ nhất là <strong>elicitation</strong>, khi server hỏi thêm thông tin từ người dùng qua client (ví dụ xác nhận "xóa 120 record, chắc chưa?"). Spec cấm dùng form elicitation để xin mật khẩu hay API key. Hai tính năng cũ là sampling (server nhờ client gọi LLM) và roots (giới hạn thư mục server được làm việc) đã bị đánh dấu deprecated ở bản 2026-07-28.<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation">Elicitation</a>; <a href="https://modelcontextprotocol.io/specification/2026-07-28/changelog">changelog 2026-07-28</a>: <em>"Deprecate the Roots, Sampling, and Logging features"</em> (tạm dịch: "đánh dấu deprecated các tính năng Roots, Sampling và Logging").</aside>
+
+<p>Một chi tiết an toàn cần biết ngay: tool có thể kèm <em>annotations</em> như <code>readOnlyHint</code> hay <code>destructiveHint</code>. Đúng như tên gọi, đó chỉ là gợi ý. Spec nói thẳng: <em>"clients MUST consider tool annotations to be untrusted unless they come from trusted servers"</em> (tạm dịch: "client PHẢI coi annotations là không đáng tin, trừ khi đến từ server tin cậy"). Server của bên thứ ba tự khai <code>readOnlyHint: true</code> thì không có nghĩa nó chỉ đọc.</p>
+
+<p><strong>Điều cần nhớ:</strong> tools do model gọi, resources do ứng dụng đưa vào, prompts do người dùng chọn. Annotations chỉ là lời tự khai của server, không phải bảo đảm.</p>
+
+<h2>4. Nhìn tận dây: một phiên thật giữa Claude Code và server</h2>
+
+<p>Phần này không lấy từ tài liệu mà từ máy anh. Hôm nay tôi chạy server <code>learn</code> của mục 7 trong Claude Code 2.1.292, chèn <code>tee</code> vào stdin/stdout để ghi lại mọi message. Đây là thứ thật sự đi trên dây:</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+  participant M as Model
+  participant H as Claude Code (host + client)
+  participant S as learn server (stdio)
+  H->>S: server/discover (version 2026-07-28)
+  S-->>H: supportedVersions, capabilities
+  H->>S: prompts/list, resources/list, tools/list
+  S-->>H: 1 tool: learning_progress + inputSchema
+  Note over M,H: Model mới chỉ thấy TÊN tool
+  M->>H: tool_use ToolSearch
+  H-->>M: schema đầy đủ của tool
+  M->>H: tool_use mcp__learn__learning_progress
+  H->>S: tools/call {topic: "mcp-co-ban"}
+  S-->>H: isError: true + message lỗi
+  H-->>M: tool_result (lỗi)
+  M->>H: tool_use lần 2, topic khác
+</pre>
+<figcaption>Hình 2. Một phiên ghi lại từ máy, rút gọn. Có ba chỗ đáng nhìn. (1) Không có bước "đăng nhập" hay handshake: request đầu tiên là <code>server/discover</code>. (2) Model không thấy schema của tool cho tới khi tự gọi ToolSearch. (3) Lỗi quay về model như một tool_result bình thường, và model gọi lại.</figcaption>
+</figure>
+
+<h3>(1) Không còn handshake</h3>
+<p>Nếu anh đọc tutorial MCP trên mạng, gần như bài nào cũng bắt đầu bằng <code>initialize</code> → <code>notifications/initialized</code>, giống bắt tay TCP. Từ bản spec <strong>2026-07-28</strong> (bản hiện hành), bước đó bị bỏ: <em>"Make MCP stateless: remove the initialize/notifications/initialized handshake. Every request now carries its protocol version and client capabilities in _meta"</em> (tạm dịch: "làm MCP thành stateless: bỏ handshake initialize. Mỗi request tự mang version và capability của client trong trường <code>_meta</code>").<span class="sidenote-ref"></span> Một <code>tools/call</code> thật trông thế này:</p>
+<aside class="sidenote"><a href="https://modelcontextprotocol.io/specification/2026-07-28/changelog">Changelog 2026-07-28</a>. Bản này cũng bỏ header <code>Mcp-Session-Id</code> của HTTP. Server viết cho bản cũ vẫn chạy: client hiện đại hỏi <code>server/discover</code> trước, không được thì lùi về <code>initialize</code>.</aside>
+
+<pre><code>{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+  "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+           "io.modelcontextprotocol/clientCapabilities":{}},
+  "name":"learning_progress","arguments":{"topic":"modern-software-developer"}}}</code></pre>
+
+<p>Với dân backend, đây là quyết định quen thuộc: bỏ sticky session để scale ngang. Mỗi request tự đủ thông tin, nên server HTTP chạy sau load balancer với 5 replica trên K8s không cần chia sẻ session. Cái giá phải trả: tool nào cần trạng thái (ví dụ một transaction nhiều bước) phải truyền handle tường minh trong tham số.</p>
+
+<h3>(2) Tool MCP được nạp trễ</h3>
+<p>Trong trace, model gọi <code>ToolSearch</code> trước rồi mới gọi được tool MCP. Đó là cơ chế tool search của Claude Code: <em>"Only tool names and server instructions load at session start"</em> (tạm dịch: "lúc bắt đầu phiên chỉ nạp tên tool và chỉ dẫn của server").<span class="sidenote-ref"></span> Lý do là chi phí context, đúng mạch bài 7 của llm-foundation. Anthropic ghi nhận agent nối tới hàng nghìn tool <em>"need to process hundreds of thousands of tokens before reading a request"</em> (tạm dịch: "phải xử lý hàng trăm nghìn token trước khi đọc tới yêu cầu").</p>
+<aside class="sidenote"><a href="https://code.claude.com/docs/en/mcp">Claude Code — MCP</a>; <a href="https://www.anthropic.com/engineering/code-execution-with-mcp">Anthropic — Code execution with MCP</a> (11/2025).</aside>
+
+<h3>(3) Đáp án câu đoán: lỗi đi về đâu</h3>
+<p>Giờ quay lại câu đoán ở mục 0. Tôi chạy đúng tình huống đó với Python SDK 2.3.0:</p>
+
+<table>
+  <tr><th>Code trong tool</th><th>Model nhận được</th></tr>
+  <tr><td><code>raise ValueError("Không có chủ đề 'x'. …")</code></td><td><code>Error executing tool learning_progress</code>: <strong>mất hết</strong> thông báo</td></tr>
+  <tr><td><code>raise ToolError("Không có chủ đề 'x'. …")</code></td><td><code>Error executing tool learning_progress: Không có chủ đề 'x'. Các chủ đề hiện có: llm-foundation, …</code></td></tr>
+</table>
+
+<p>SDK coi mọi exception không phải <code>ToolError</code> là crash, và giấu nội dung đi (có thể chứa stack trace hay dữ liệu nội bộ). Chỉ <code>ToolError</code> mới được coi là "lỗi anh đã lường trước" và đi tới model nguyên văn. Với bản có <code>ToolError</code>, trong trace Claude Code ở trên, model đọc danh sách chủ đề trong message lỗi rồi tự gọi lại với một chủ đề có thật. Đó chính là vòng tự sửa.</p>
+
+<p>Câu đoán của anh có đúng không? Nếu anh đoán "model thấy nguyên message" thì sai cũng là bình thường, và đó chính là chỗ đáng học. Đây là lỗ ở bài 1 (<code>except: continue</code> nuốt lỗi), giờ xuất hiện ở tầng SDK.</p>
+
+<p>Spec phân biệt hai loại lỗi, và anh cần giữ ranh giới này khi viết server:<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://modelcontextprotocol.io/specification/2026-07-28/server/tools">MCP spec — Tools, mục Error Handling</a>.</aside>
+<table>
+  <tr><th>Loại</th><th>Ví dụ</th><th>Ai sửa được</th></tr>
+  <tr><td><strong>Protocol error</strong> (JSON-RPC <code>error</code>)</td><td>Thiếu <code>clientCapabilities</code> trong <code>_meta</code> → <code>-32602</code></td><td>Người viết client. <em>"models are less likely to be able to fix"</em> (tạm dịch: "model khó tự sửa")</td></tr>
+  <tr><td><strong>Tool execution error</strong> (<code>result</code> có <code>isError: true</code>)</td><td>Chủ đề không tồn tại, query sai cột, API trả 404</td><td>Model. <em>"actionable feedback that language models can use to self-correct"</em> (tạm dịch: "phản hồi đủ cụ thể để model tự sửa và thử lại")</td></tr>
+</table>
+
+<p><strong>Điều cần nhớ:</strong> spec 2026-07-28 là stateless, mỗi request tự mang version. Tool MCP trong Claude Code được nạp trễ qua ToolSearch. Lỗi nghiệp vụ phải đi ra bằng tool execution error có message chỉ cách sửa; trong Python SDK 2.x, điều đó nghĩa là <code>raise ToolError</code>.</p>
+
+<h2>5. Transport: stdio hay Streamable HTTP</h2>
+
+<p>Spec hiện có hai transport. Hãy nhìn chúng như hai cách deploy một service:</p>
+
+<table>
+  <tr><th></th><th>stdio</th><th>Streamable HTTP</th></tr>
+  <tr><td>Chạy ở đâu</td><td>Process con do host khởi chạy, trên máy người dùng</td><td>Service độc lập, một endpoint duy nhất nhận POST</td></tr>
+  <tr><td>Ai dùng</td><td>Một người, một host</td><td>Cả team, nhiều host cùng lúc</td></tr>
+  <tr><td>Credential</td><td>Lấy từ biến môi trường. Spec: stdio <em>"SHOULD NOT"</em> (tạm dịch: "không nên") dùng phần authorization</td><td>OAuth 2.1, server đóng vai resource server</td></tr>
+  <tr><td>Giống với</td><td>Một CLI tool anh tự chạy</td><td>Một microservice trên K8s</td></tr>
+  <tr><td>Rủi ro hay gặp</td><td>Ghi rác ra stdout</td><td>Quên kiểm tra <code>Origin</code>, bind ra 0.0.0.0 khi chạy local</td></tr>
+</table>
+<p class="small">Nguồn: spec 2026-07-28, <a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio">stdio</a>, <a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http">Streamable HTTP</a>, <a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization">Authorization</a>. Transport cũ "HTTP+SSE" đã deprecated từ 2025-03-26; gặp tutorial dùng nó thì bỏ qua.</p>
+
+<p>Với stdio, có một luật mà ai mới viết server cũng vấp: <em>"The server MUST NOT write anything to its stdout that is not a valid MCP message"</em> (tạm dịch: "server KHÔNG ĐƯỢC ghi ra stdout bất cứ thứ gì không phải message MCP hợp lệ"). Lý do: stdout chính là đường truyền. Một dòng <code>print("debug")</code> chen vào giữa luồng JSON-RPC thì client đọc phải rác. Log phải ghi ra stderr. Bên Java cũng vậy: tutorial Java chính thức dặn tắt console log của Spring Boot (<code>logging.pattern.console=</code>) khi chạy server stdio.</p>
+
+<p><strong>Điều cần nhớ:</strong> tool cá nhân dùng stdio, credential lấy từ env. Tool dùng chung cho team dùng Streamable HTTP, có OAuth, deploy như một service. Với stdio, stdout là của giao thức; log đi stderr.</p>
+
+<h2>6. MCP trong Claude Code: bốn điều cần biết</h2>
+
+<ol>
+  <li><strong>Thêm server:</strong> <code>claude mcp add &lt;tên&gt; -- &lt;lệnh&gt; [args…]</code> cho stdio, <code>claude mcp add --transport http &lt;tên&gt; &lt;url&gt;</code> cho HTTP. Mọi thứ sau <code>--</code> được chuyển nguyên cho server.</li>
+  <li><strong>Scope:</strong> <code>local</code> (mặc định, chỉ anh, chỉ project này), <code>user</code> (chỉ anh, mọi project), <code>project</code> (ghi vào <code>.mcp.json</code> ở root, commit lên git cho cả team; Claude Code hỏi xác nhận trước khi dùng server từ file này).</li>
+  <li><strong>Tên tool:</strong> <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>. Đây cũng là tên anh dùng trong permission rule và matcher của hook (bài 9).</li>
+  <li><strong>Giới hạn output:</strong> cảnh báo khi một tool trả quá 10.000 token, cắt ở 25.000 token (chỉnh bằng <code>MAX_MCP_OUTPUT_TOKENS</code>). Tool trả nguyên một bảng 50.000 dòng là tool thiết kế sai, chuyện của bài 5.</li>
+</ol>
+<p class="small">Nguồn: <a href="https://code.claude.com/docs/en/mcp">Claude Code — MCP</a>. Lệnh <code>/mcp</code> trong phiên cho xem trạng thái, bật/tắt và kết nối lại server.</p>
+
+<p>Cuối cùng là cảnh báo của chính tài liệu Claude Code: <em>"Verify you trust each server before connecting it. Servers that fetch external content can expose you to prompt injection risk."</em> (tạm dịch: "hãy chắc rằng anh tin server trước khi kết nối. Server lấy nội dung từ bên ngoài có thể mở đường cho prompt injection.") Một MCP server là code chạy với quyền của anh, và output của nó đi thẳng vào context của model. Bài 15 sẽ lập threat model cho chuyện này. Hôm nay chỉ cần nhớ: cài MCP server cũng cẩn thận như thêm một dependency vào <code>pom.xml</code>.</p>
+
+<p><strong>Điều cần nhớ:</strong> <code>claude mcp add</code>, ba scope, tên <code>mcp__server__tool</code>, giới hạn 25k token. MCP server là code có quyền của anh; chọn server như chọn dependency.</p>
+
+<h2>7. Thực hành: server <code>learn</code> (~20 phút)</h2>
+
+<p>Hôm nay anh hỏi tôi "đang học đến chương nào". Để trả lời, tôi phải chạy ba lệnh shell đọc thư mục <code>output/learn/</code>. Ta biến việc đó thành một tool. Nhỏ, nhưng là việc thật, và anh sẽ dùng nó.</p>
+
+<p class="small">Muốn làm cho việc ở công ty thay vì? Chọn một việc anh hay copy-paste vào agent: tra schema DB dev (chỉ đọc), gọi một API nội bộ, đọc trạng thái pipeline. Làm theo đúng các bước dưới đây. Không cần gửi code, chỉ cần trả lời các câu hỏi ở cuối.</p>
+
+<p><strong>Bước 1 — Viết server.</strong> Lưu ở đâu tùy anh, ví dụ <code>~/mcp/learn_server.py</code>. Khối comment đầu file cho <code>uv</code> tự cài dependency.</p>
+<pre><code># /// script
+# requires-python = "&gt;=3.10"
+# dependencies = ["mcp&gt;=2,&lt;3"]
+# ///
+import re
+import sys
+from pathlib import Path
+
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+
+LEARN_DIR = Path(sys.argv[1]).resolve()
+mcp = MCPServer("learn")
+
+
+@mcp.tool()
+def learning_progress(topic: str) -&gt; str:
+    """Tiến độ của một chủ đề học: bài mới nhất đã giao và learning record mới nhất.
+
+    topic: tên thư mục trong output/learn/, ví dụ "modern-software-developer".
+    """
+    ws = LEARN_DIR / topic
+    if not ws.is_dir():
+        topics = ", ".join(sorted(p.name for p in LEARN_DIR.iterdir()
+                                  if p.is_dir() and not p.name.startswith(".")))
+        raise ToolError(f"Không có chủ đề '{topic}'. Các chủ đề hiện có: {topics}")
+    lessons = sorted((ws / "lessons").glob("*.html"))
+    records = sorted((ws / "learning-records").glob("*.md"))
+    last = records[-1].read_text(encoding="utf-8") if records else ""
+    title = re.search(r"^#\s+(.+)$", last, re.M)
+    return (f"Số bài đã giao: {len(lessons)}; bài mới nhất: {lessons[-1].name if lessons else '-'}\n"
+            f"Learning record mới nhất: {records[-1].name if records else '-'}\n"
+            f"Tóm tắt: {title.group(1) if title else '-'}")
+
+
+if __name__ == "__main__":
+    mcp.run()  # mặc định: stdio</code></pre>
+<p class="small">Cảnh báo: Python SDK lên 2.0 ngày 2026-07-28 và đổi <code>FastMCP</code> thành <code>MCPServer</code>. Gần như mọi tutorial trên mạng (kể cả nhiều bài trên trang chính thức) vẫn dùng <code>from mcp.server.fastmcp import FastMCP</code>; với bản 2.x, dòng đó báo <code>ModuleNotFoundError</code>. Xem <a href="https://py.sdk.modelcontextprotocol.io/v2/migration/">migration guide</a>.</p>
+
+<p><strong>Bước 2 — Thử bằng tay, chưa có agent.</strong> Giống anh <code>curl</code> một endpoint trước khi nối frontend. Gửi thẳng JSON-RPC vào stdin:</p>
+<pre><code>M='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}'
+{ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{'"$M"'}}'
+  echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{'"$M"',"name":"learning_progress","arguments":{"topic":"x"}}}'
+  sleep 3; } | uv run -q ~/mcp/learn_server.py ~/workspace/my-agent/output/learn | jq -c .</code></pre>
+<p class="small">Cách khác: <a href="https://modelcontextprotocol.io/docs/tools/inspector">MCP Inspector</a> (<code>npx @modelcontextprotocol/inspector uv run …</code>) có giao diện web, nhưng cần Node ≥ 22.19; máy anh đang có Node 22.12.</p>
+
+<p><strong>Bước 3 — Cắm vào Claude Code</strong> (scope local, không ảnh hưởng ai):</p>
+<pre><code>cd ~/workspace/my-agent
+claude mcp add learn -- uv run -q $HOME/mcp/learn_server.py $HOME/workspace/my-agent/output/learn
+claude mcp list</code></pre>
+
+<p><strong>Bước 4 — Dùng và đọc trace.</strong> Mở phiên mới, hỏi: "tôi đang học tới đâu ở chủ đề mcp?" (cố ý dùng tên sai). Sau đó lấy lại kỹ năng đọc trace của bài 1:</p>
+<pre><code>F=$(ls -t ~/.claude/projects/-Users-luatnq-workspace-my-agent/*.jsonl | head -1)
+jq -c '.message.content[]? | select(.type=="tool_use") | {name, input}' "$F"</code></pre>
+
+<p><strong>Bước 5 — Thí nghiệm.</strong> Đổi <code>raise ToolError</code> thành <code>raise ValueError</code>, gõ <code>/mcp</code> để kết nối lại server, rồi hỏi lại câu cũ trong một phiên mới. Đếm số lần model gọi tool trước khi trả lời, và xem câu trả lời cuối khác gì.</p>
+
+<p>Trả lời bốn câu:</p>
+<ol>
+  <li>Trong trace, trước lần gọi <code>mcp__learn__learning_progress</code> có lần gọi <code>ToolSearch</code> không? Vì sao?</li>
+  <li>Bước 5: với <code>ValueError</code>, model gọi tool mấy lần, và có tìm ra chủ đề đúng không? Với <code>ToolError</code> thì sao?</li>
+  <li>Khi tôi thử với tên sai "mcp-co-ban", model chọn <code>llm-foundation</code> là "gần nhất", dù bài MCP nằm ở <code>modern-software-developer</code>. Lỗi đó do model hay do thiết kế tool? Anh sẽ sửa gì trong tool? (Bài 5 sẽ dùng câu trả lời này.)</li>
+  <li>Nếu muốn cả team dùng một server kiểu này cho dữ liệu chung (ví dụ tiến độ sprint), anh chọn transport nào, và credential đi đường nào?</li>
+</ol>
+
+<details>
+  <summary>Gợi ý (mở sau khi đã làm)</summary>
+  <p><strong>Câu 1.</strong> Có, vì tool search mặc định bật: lúc đầu model chỉ biết tên tool, chưa biết schema. Đó là cách giữ context nhỏ khi có nhiều server.</p>
+  <p><strong>Câu 2.</strong> Tôi đã chạy thử mỗi bản 2 lần, cùng câu hỏi "chủ đề mcp". Bản <code>ValueError</code>: cả hai lần đều gọi tool 3 lần, xen giữa là một lần model <strong>bỏ tool, tự chạy <code>ls</code> bằng Bash</strong> để xem thư mục. Bản <code>ToolError</code>: một lần gọi 2 lần (lần 2 đúng), một lần gọi 1 lần rồi hỏi lại người dùng, và không lần nào phải dùng Bash. Mẫu nhỏ (n=2) nên chỉ coi là minh họa. Nhưng hãy để ý: agent production thường không có Bash, nên khi message lỗi bị nuốt, model chỉ còn cách đoán. Message lỗi là một phần của API mà model đọc.</p>
+  <p><strong>Câu 3.</strong> Chủ yếu do tool. Description không nói mỗi chủ đề chứa gì, nên model chỉ đoán theo tên thư mục. Hướng sửa: thêm tool <code>list_topics</code> trả cả tên lẫn mô tả (lấy dòng đầu của MISSION.md), hoặc đưa mô tả vào chính message lỗi.</p>
+  <p><strong>Câu 4.</strong> Streamable HTTP, deploy như một service, có OAuth hoặc ít nhất đứng sau gateway xác thực của công ty. Credential của nguồn dữ liệu nằm ở phía server, không nằm trên máy từng dev. Bài 20 (MCP portal) sẽ quay lại chuyện này ở quy mô team.</p>
+</details>
+
+<p class="small">Muốn thử bản Java? Có <a href="https://github.com/modelcontextprotocol/java-sdk">Java SDK chính thức</a> (<code>io.modelcontextprotocol.sdk:mcp</code>, Java 17+) và <a href="https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html">Spring AI MCP server starter</a> với annotation <code>@McpTool</code>. Lưu ý: đến 2026-10-07 tôi chưa thấy bằng chứng Java SDK hỗ trợ spec 2026-07-28. Nó vẫn chạy được với Claude Code nhờ cơ chế lùi về <code>initialize</code>. Tôi chưa chạy thử bản Java trên máy anh.</p>
+
+<h2>8. Kiểm tra cuối bài</h2>
+<p>Bốn câu tình huống, và một câu tự diễn đạt. Câu tự diễn đạt quan trọng hơn: nó đo anh nhớ được, không chỉ nhận ra được.</p>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Server stdio của anh chạy đúng khi test riêng từng hàm. Cắm vào Claude Code thì kết nối lỗi ngay. Anh vừa thêm vài dòng <code>print()</code> để debug. Nguyên nhân là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Lệnh print ghi vào stdout, làm hỏng luồng JSON-RPC</li>
+    <li>Lệnh print làm server chậm, client hết thời gian</li>
+    <li>Claude Code chặn mọi server ghi log ra terminal</li>
+    <li>Lệnh print đổi encoding của stdin sang kiểu khác</li>
+  </ul>
+  <p class="quiz-explain">Với stdio, stdout chính là đường truyền: spec cấm ghi ra stdout bất cứ thứ gì không phải message MCP. Log phải đi stderr. Server Spring Boot cũng gặp đúng chuyện này với console log.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Team 30 người muốn agent của mọi người cùng tra Jira nội bộ. Token Jira không được nằm trên máy từng dev. Chọn thiết kế nào?</p>
+  <ul class="quiz-options">
+    <li data-correct>Một server Streamable HTTP dùng chung, xác thực bằng OAuth</li>
+    <li>Mỗi dev tự chạy server stdio, token để trong env</li>
+    <li>Commit cả server stdio lẫn token chung vào file .mcp.json</li>
+    <li>Bỏ MCP, để agent gọi Jira bằng curl trong Bash</li>
+  </ul>
+  <p class="quiz-explain">Stdio lấy credential từ môi trường của từng máy, nên token sẽ rải khắp team. Server HTTP dùng chung giữ credential ở phía server, và mỗi dev xác thực bằng danh tính của mình qua OAuth 2.1. Cách này cũng cho anh audit log tập trung, điều mà một team làm ngân hàng cần.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Một MCP server của bên thứ ba khai tool <code>sync_data</code> với <code>readOnlyHint: true</code>. Anh nên hiểu thế nào?</p>
+  <ul class="quiz-options">
+    <li data-correct>Chỉ là lời server tự khai, chưa đủ để tin</li>
+    <li>Claude Code đã kiểm chứng, tool chắc chắn chỉ đọc</li>
+    <li>Spec bắt server phải khai đúng, sai sẽ bị gỡ</li>
+    <li>Tool chạy trong sandbox, có ghi dữ liệu cũng ổn</li>
+  </ul>
+  <p class="quiz-explain">Annotations là "hints". Spec yêu cầu client coi chúng là không đáng tin, trừ khi server đáng tin. Không ai kiểm chứng lời khai đó. Muốn chặn ghi thật sự thì dùng permission rule hoặc hook ở phía host (bài 9), hoặc chỉ cấp cho server một credential read-only.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Theo spec 2026-07-28, client mới kết nối tới server qua HTTP. Request <code>tools/call</code> đầu tiên cần gì đi trước?</p>
+  <ul class="quiz-options">
+    <li data-correct>Không cần gì, version nằm sẵn trong _meta của request</li>
+    <li>Gọi initialize một lần để server cấp Mcp-Session-Id cho client</li>
+    <li>Một lần tools/list để server biết client đã đọc schema</li>
+    <li>Mở sẵn kết nối GET SSE để nhận kết quả</li>
+  </ul>
+  <p class="quiz-explain">Bản 2026-07-28 bỏ handshake <code>initialize</code>, bỏ <code>Mcp-Session-Id</code> và bỏ GET stream. Mỗi request tự mang version và capability trong <code>_meta</code>, nên request nào cũng có thể là request đầu tiên. <code>server/discover</code> có sẵn nếu client muốn hỏi trước, nhưng không bắt buộc. Các đáp án còn lại mô tả spec bản cũ.</p>
+</div>
+
+<details>
+  <summary>Tự diễn đạt: giải thích cho một dev trong team, trong 3 câu, khác nhau giữa <em>protocol error</em> và <em>tool execution error</em>, và vì sao khác biệt đó quan trọng với agent. Viết ra trước, rồi mới mở.</summary>
+  <p>Protocol error là lỗi ở tầng JSON-RPC: request sai cấu trúc, method không tồn tại, thiếu trường bắt buộc. Lỗi này dành cho người viết client sửa. Tool execution error là lỗi khi chạy tool (tham số nghiệp vụ sai, dữ liệu không có), trả về trong <code>result</code> với <code>isError: true</code>, và model đọc được. Nó quan trọng vì chỉ loại thứ hai mới đi vào vòng ReAct: message lỗi càng chỉ rõ cách sửa thì model càng tự sửa được ngay ở lần gọi sau.</p>
+  <p>So với câu của anh: có đủ ba ý "ai sửa", "nằm ở đâu trong message", và "vì sao message phải chỉ cách sửa" không?</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>Tóm lại</h2>
+<ul>
+  <li><strong>MCP là "JDBC cho context của agent":</strong> N×M tích hợp thành N+M. Khác JDBC ở chỗ server là process riêng, và người đọc API là model.</li>
+  <li><strong>Host / client / server:</strong> host là ứng dụng, mỗi server có một client riêng bên trong host.</li>
+  <li><strong>Ba primitive:</strong> tools (model gọi), resources (ứng dụng đưa vào), prompts (người dùng chọn). Annotations chỉ là lời tự khai.</li>
+  <li><strong>Spec 2026-07-28 là stateless:</strong> không còn <code>initialize</code>, không còn session; mỗi request mang version trong <code>_meta</code>.</li>
+  <li><strong>Transport:</strong> stdio cho tool cá nhân (stdout là của giao thức), Streamable HTTP + OAuth cho tool dùng chung.</li>
+  <li><strong>Lỗi nghiệp vụ phải tới được model:</strong> tool execution error có message chỉ cách sửa. Trong Python SDK 2.x là <code>ToolError</code>.</li>
+</ul>
+<p>Bài 5 sẽ dùng lại chính server này. Ta sẽ review bộ tool của nó dưới góc "người dùng là model": đặt tên, description, kích thước output, message lỗi, và cách viết test cho tool.</p>
+
+<h2>Đọc thêm</h2>
+<p><strong>Nguồn chính:</strong> <a href="https://modelcontextprotocol.io/docs/learn/architecture">MCP — Architecture overview</a> (khoảng 15 phút đọc). Đây là trang chính thức, ngắn và đúng spec hiện hành. Sau đó đọc <a href="https://modelcontextprotocol.io/specification/2026-07-28/changelog">changelog 2026-07-28</a> để biết tutorial nào đã cũ. Nếu còn thời gian, đọc <a href="https://www.reillywood.com/blog/apis-dont-make-good-mcp-tools/">"APIs don't make good MCP tools"</a> của Reilly Wood, bài đọc của CS146S; nó mở đầu cho bài 5.</p>
+
+<div class="callout">
+  <span class="label">Báo lại cho tôi</span>
+  <p>(1) Câu khởi động <strong>x/1</strong>, và nguyên văn câu đoán của anh ở mục 0, dù đúng hay sai. (2) Cuối bài <strong>y/4</strong>; nếu sai, kèm đáp án anh đã chọn. Kèm nguyên văn 3 câu tự diễn đạt. (3) Trả lời 4 câu thực hành, nhất là <em>số lần gọi tool</em> ở bước 5 với ValueError và với ToolError. Nếu anh làm bản cho việc công ty thì chỉ cần nói: việc gì, transport nào, điều gì không như dự kiến. Không cần gửi code. Chỗ nào chưa rõ, cứ hỏi tôi.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0003-reppit-va-spec-driven.html">← Bài 3: RePPIT và spec-driven</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0005-thiet-ke-tool-cho-agent.html">Bài 5: Thiết kế tool →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/diagram.js"></script>
+</body>
+</html>

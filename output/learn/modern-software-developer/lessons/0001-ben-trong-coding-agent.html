@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 1 — Bên trong một coding agent</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0001 · Module 1 (CS146S W1) · 2026-09-26 · ~35 phút · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/coding-agent-internals.html">Cheat sheet</a> · <a href="../../llm-foundation/reference/glossary.html">Glossary</a></p>
+
+<h1>Bên trong một coding agent</h1>
+<p class="subtitle">Claude Code trông như một hệ thống phức tạp. Nhưng bài đọc Week 1 của CS146S cho thấy phần lõi của nó chỉ cần <strong>192 dòng Python</strong>. Bài này mở cái lõi đó ra. Sau đó ta xem Claude Code đắp thêm những gì lên trên, và vì sao phải đắp.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Mở transcript của một phiên Claude Code thật và đọc hiểu nó: bước nào agent đang tìm hiểu, bước nào đang sửa, bước nào đang kiểm tra lại, và nó phản ứng ra sao khi tool báo lỗi. Giải thích được vì sao lệnh Edit của Claude Code khó tính như vậy.</p>
+</div>
+
+<h2>0. Khởi động — ôn lại hai ý cũ</h2>
+<p>Trước khi vào bài mới, ta gợi lại hai điều anh đã học. Cả hai sẽ được dùng ngay trong bài này. Đừng lo nếu không nhớ chắc: cố nhớ lại rồi mới chọn, chính lúc cố nhớ là lúc kiến thức được củng cố.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Câu 1 ôn <a href="../../llm-foundation/lessons/0003-tool-use-loop.html">bài 3 llm-foundation</a>, đúng chỗ anh từng sai ở LR-0004. Câu 2 ôn <a href="../../llm-foundation/lessons/0007-context-engineering-va-prompt-caching.html">bài 7</a>.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Trong agent 192 dòng, khi model "gọi" <code>read_file</code>, thứ gì thực sự mở file trên đĩa?</p>
+  <ul class="quiz-options">
+    <li data-correct>Vòng lặp Python của harness</li>
+    <li>Model đọc thẳng ổ đĩa</li>
+    <li>Server OpenAI mở hộ file</li>
+    <li>Tokenizer nạp file vào prompt</li>
+  </ul>
+  <p class="quiz-explain">Model chỉ viết ra một dòng chữ nói rằng nó muốn đọc file. Người thật sự mở file là hàm <code>read_file_tool</code> chạy trên máy anh. Kết quả được dán ngược vào hội thoại cho model đọc. Ở bản 192 dòng điều này còn lộ rõ hơn ở Claude Code: "tool call" chỉ là một dòng text <code>tool: read_file({...})</code>, và code Python tự tách dòng đó ra.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Agent SDK có option <code>excludeDynamicSections</code>: chuyển phần context đổi theo từng phiên (thư mục làm việc, git, ngày) ra khỏi system prompt, xuống user message đầu tiên. Lợi ích chính là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Nhiều phiên chung được prefix cache</li>
+    <li>Model tuân thủ system prompt hơn</li>
+    <li>Giảm tổng số token mỗi request</li>
+    <li>Tránh lộ đường dẫn cho model</li>
+  </ul>
+  <p class="quiz-explain">Cache khớp theo phần đầu (prefix) của request, theo thứ tự tools → system → messages. Chỉ cần một ký tự trong system prompt khác đi, ví dụ đường dẫn hay ngày, là mọi thứ phía sau mất cache. Dời phần hay đổi xuống dưới thì system prompt giống hệt nhau giữa các phiên, nên các phiên dùng chung được cache. Tổng số token không đổi, model vẫn thấy đường dẫn. (<a href="https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts">Agent SDK — Modifying system prompts</a>)</p>
+</div>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Model và harness: người nghĩ và người làm</h2>
+
+<p>Hãy hình dung một chuyên gia tư vấn qua điện thoại. Ông ấy rất giỏi nhưng không chạm được vào máy của anh. Ông nói: "mở file <code>OrderService.java</code> đọc tôi nghe". Anh mở, đọc lại. Ông nói tiếp: "sửa dòng này thành thế này". Anh sửa, rồi báo lại kết quả. Cứ thế cho tới khi xong việc.</p>
+
+<p>Trong coding agent, <strong>model là ông chuyên gia</strong>: chỉ nghĩ và nói, tức là sinh ra text. <strong>Harness là người ngồi ở bàn phím</strong>: làm theo lời model, rồi đọc lại kết quả cho model nghe. Tài liệu chính thức gọi Claude Code đúng bằng tên đó, <em>"agentic harness"</em> (tạm dịch: "bộ khung giúp model hành động như agent").<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://code.claude.com/docs/en/how-claude-code-works">How Claude Code works</a>. Code 192 dòng: <a href="https://drive.google.com/file/d/1DxKa_autBOu9s8DvItodgUAwH_pBg7aR">coding_agent_from_scratch.py</a>, kèm <a href="https://youtube.com/watch?v=s7ZzkdvCMDY">video bài giảng</a>.</aside>
+
+<p>Phép so sánh này hỏng ở một chỗ. Người thật có thể từ chối một yêu cầu nguy hiểm theo cảm tính. Harness chỉ từ chối được nếu ai đó đã <em>viết sẵn luật</em> để từ chối. Đó là lý do mọi cơ chế an toàn (hỏi quyền, sandbox) đều nằm ở harness.</p>
+
+<p>Trong bản 192 dòng, harness chỉ là <strong>hai vòng lặp lồng nhau</strong>. Vòng ngoài chờ anh gõ yêu cầu. Vòng trong gửi hội thoại cho model. Nếu model xin dùng tool thì harness chạy tool, dán kết quả vào hội thoại rồi hỏi model tiếp. Nếu model không xin tool nữa thì harness in câu trả lời và quay ra chờ anh.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+  participant U as Người dùng
+  participant H as Harness
+  participant M as LLM
+  participant F as File / shell
+  U->>H: yêu cầu
+  loop vòng trong, tới khi response không còn tool call
+    H->>M: toàn bộ conversation + mô tả tool
+    M-->>H: tool: edit_file({...})
+    H->>F: thực thi thật
+    F-->>H: kết quả hoặc lỗi
+    Note over H: nối tool_result vào conversation
+  end
+  M-->>H: câu trả lời thường
+  H-->>U: in ra, chờ input tiếp
+</pre>
+<figcaption>Hình 1. Vòng trong của một coding agent. Hãy nhìn mũi tên H→F: chỉ harness chạm vào file, model thì không bao giờ. Vì vậy mọi cơ chế an toàn đều phải đặt ở harness.</figcaption>
+</figure>
+
+<p>Nhiều người nghĩ "tool calling" là một năng lực đặc biệt nằm sâu bên trong model. Bản 192 dòng cho thấy điều ngược lại. Nó <strong>không dùng</strong> tính năng function calling của API. System prompt chỉ liệt kê tên và mô tả các hàm, rồi dặn model: muốn dùng tool thì viết đúng một dòng dạng <code>tool: TOOL_NAME({json})</code>. Code Python tìm dòng đó và tách ra. Nói đơn giản: tool calling chỉ là <em>một quy ước viết text</em> mà hai bên đã thỏa thuận. Function calling của API chỉ làm cho quy ước ấy chặt chẽ hơn.</p>
+
+<p><strong>Điều cần nhớ:</strong> model chỉ sinh text; harness làm mọi việc còn lại. Khi agent làm sai, hãy hỏi lỗi nằm ở phía nào: model nghĩ sai, hay harness thiếu một lớp chặn.</p>
+
+<h2>2. Bộ tool tối thiểu, và mảnh còn thiếu</h2>
+
+<p>Trước khi đọc tiếp, thử đoán: một coding agent cần tối thiểu những việc gì? Hãy nghĩ tới lúc chính anh sửa một bug.</p>
+
+<p>Anh sẽ làm ba việc: <strong>tìm hiểu</strong> (đọc code, grep), <strong>sửa</strong>, rồi <strong>kiểm tra lại</strong> (build, chạy test). Claude Code mô tả vòng lặp của nó đúng như vậy: <em>"gather context, take action, and verify results"</em> (tạm dịch: "thu thập context, hành động, rồi kiểm chứng kết quả").<span class="sidenote-ref"></span> Giờ đặt hai agent cạnh nhau:</p>
+<aside class="sidenote">Bài <a href="https://claude.com/blog/building-agents-with-the-claude-agent-sdk">Building agents with the Claude Agent SDK</a> chia việc kiểm tra làm 3 loại: theo luật (lint, test), bằng mắt (screenshot), và nhờ LLM chấm. Loại đầu rẻ và đáng tin nhất.</aside>
+
+<table>
+  <tr><th>Việc</th><th>Bản 192 dòng</th><th>Claude Code</th></tr>
+  <tr><td>Tìm hiểu</td><td><code>read_file</code>, <code>list_files</code></td><td>Read, Glob, Grep (và Bash <code>rg</code>)</td></tr>
+  <tr><td>Sửa</td><td><code>edit_file</code> (nếu <code>old_str</code> rỗng thì tạo mới hoặc ghi đè file)</td><td>Edit, Write, Bash</td></tr>
+  <tr><td>Kiểm tra lại</td><td><strong>không có</strong></td><td>Bash (build, test, lint), rồi đọc output</td></tr>
+</table>
+
+<p>Bản 192 dòng thiếu hẳn bước cuối. Giống một developer sửa code xong rồi push luôn, không build lần nào. Model sẽ báo "xong" chỉ dựa trên niềm tin của nó. Vì vậy <strong>bash là tool đáng giá nhất</strong>: nó thay câu "tôi nghĩ là đúng" bằng câu "compiler và test nói là đúng".</p>
+
+<p>Nghe thì tưởng agent càng nhiều tool càng mạnh. Thực tế không hẳn. Khi làm SWE-bench, Anthropic chỉ cho model <strong>hai tool, bash và edit</strong>, mà vẫn đạt 49% SWE-bench Verified với Claude 3.5 Sonnet. Công sức dồn vào việc làm cho từng tool thật chắc. Ví dụ: họ thấy model hay nhầm đường dẫn tương đối sau khi đã <code>cd</code> sang thư mục khác, nên bắt tool chỉ nhận đường dẫn tuyệt đối.<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://www.anthropic.com/engineering/swe-bench-sonnet">Raising the bar on SWE-bench Verified with Claude 3.5 Sonnet</a> (01/2025).</aside>
+
+<p><strong>Điều cần nhớ:</strong> đủ ba pha tìm hiểu, sửa, kiểm tra quan trọng hơn có nhiều tool. Thiếu pha kiểm tra thì agent chỉ còn biết đoán.</p>
+
+<h2>3. Vì sao sửa file bằng "thay chuỗi"</h2>
+
+<p>Giả sử cần sửa đúng một dòng trong một file Java 400 dòng. Model phải "nói" cho harness biết thay đổi đó. Có ba cách nói:</p>
+<ol>
+  <li><strong>Viết lại cả file</strong> với dòng đã sửa.</li>
+  <li><strong>Chỉ số dòng</strong>: "dòng 212 đổi thành…".</li>
+  <li><strong>Trích đoạn cũ và đưa đoạn mới</strong>: "đoạn này… đổi thành đoạn này…". Cách này gọi là <code>str_replace</code>. Nó giống một comment trong code review: dán đúng mấy dòng cần sửa, kèm bản sửa.</li>
+</ol>
+
+<p>Cách 1 dễ hiểu nhất nhưng rất tốn. Model phải viết lại cả 400 dòng, mà output token đắt gấp 5 lần input (bài 1). Hình dưới vẽ đúng tỉ lệ:</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 720 160" role="img" aria-label="So sánh số output token: viết lại cả file khoảng 4000 token, str_replace khoảng 60 token">
+  <text x="0" y="20" class="d-strong">Viết lại cả file: ~4.000 token</text>
+  <rect class="d-bad-fill" x="0" y="30" width="560" height="22"/>
+  <text x="0" y="82" class="d-strong">str_replace: ~60 token</text>
+  <text x="200" y="82" class="d-muted d-small">(đoạn cũ + đoạn mới, mỗi đoạn 3 dòng)</text>
+  <rect class="d-ok-fill" x="0" y="92" width="8.4" height="22"/>
+  <text x="0" y="148" class="d-muted d-small">Giả định: file 400 dòng × ~40 ký tự; 1 token ≈ 4 ký tự (Anthropic pricing, bài 1). Tỉ lệ: 0,14 px = 1 token.</text>
+</svg>
+<figcaption>Hình 2. Số output token để sửa một dòng. Hãy nhìn độ dài hai thanh: chênh nhau khoảng 67 lần. Chậm cũng tương ứng, vì model sinh output từng token một (bài 8 llm-foundation).</figcaption>
+</figure>
+
+<p>Cách 2 thì rẻ. Nhưng model rất kém khi làm việc với số dòng. Nhóm Aider đo được rằng bỏ số dòng đi là một trong những thay đổi giúp ích nhiều nhất. Họ viết thẳng: <em>"GPT is terrible at working with source code line numbers"</em> (tạm dịch: "GPT làm việc với số dòng trong source code rất tệ").<span class="sidenote-ref"></span> Anh cũng từng gặp chuyện tương tự: một patch ghi theo số dòng sẽ trượt ngay khi ai đó chèn thêm một dòng ở phía trên.</p>
+<aside class="sidenote"><a href="https://aider.chat/docs/unified-diffs.html">Aider — Unified diffs</a>; <a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/text-editor-tool">Anthropic — Text editor tool</a>. OpenAI dùng định dạng riêng là <code>apply_patch</code>, nhưng cũng không dùng số dòng mà neo bằng 3 dòng context (<a href="https://developers.openai.com/cookbook/examples/gpt4-1_prompting_guide">GPT-4.1 prompting guide</a>).</aside>
+
+<p>Cách 3 vừa rẻ vừa bền. Nó xác định chỗ cần sửa bằng chính nội dung code, không cần số dòng. Anthropic kết luận họ đạt <em>"highest reliability with string replacement"</em> (tạm dịch: "sửa bằng thay chuỗi cho độ tin cậy cao nhất").</p>
+
+<h3>Ba điều kiện của Edit, nhìn bằng mắt người làm database</h3>
+
+<p>Thay chuỗi cũng có cách hỏng riêng. Anh sẽ thấy chúng quen thuộc nếu nghĩ Edit giống một câu <code>UPDATE … WHERE …</code>. Chuỗi cũ (<code>old_string</code>) đóng vai trò mệnh đề <code>WHERE</code>. Claude Code đặt ba điều kiện, mỗi điều kiện chặn một cách hỏng:<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://code.claude.com/docs/en/tools-reference">Claude Code — Tools reference</a>, mục Edit.</aside>
+
+<table>
+  <tr><th>Điều kiện của Edit</th><th>Giống trong database</th><th>Chặn cách hỏng nào</th><th>Bản 192 dòng</th></tr>
+  <tr><td><strong>Phải Read trước khi Edit</strong> (bản đọc bị cắt ngắn không tính)</td><td>Optimistic locking: phải đọc bản mới nhất rồi mới được ghi</td><td>Model sửa theo trí nhớ hoặc đoán nội dung file</td><td>Không kiểm tra</td></tr>
+  <tr><td><strong><code>old_string</code> khớp chính xác</strong>, lệch một khoảng trắng cũng trượt</td><td><code>WHERE</code> so khớp tuyệt đối</td><td>Sửa nhầm vào một chỗ trông gần giống</td><td>Có: báo <code>old_str not found</code> (không tìm thấy chuỗi cũ)</td></tr>
+  <tr><td><strong>Khớp đúng một chỗ</strong>; nếu không thì thêm dòng xung quanh, hoặc chủ động dùng <code>replace_all</code></td><td><code>UPDATE</code> phải trúng đúng 1 row</td><td>Sửa nhầm chỗ xuất hiện khác</td><td>Thay chỗ đầu tiên, không báo gì</td></tr>
+</table>
+
+<p>Hãy để ý hàng cuối. Một câu <code>UPDATE</code> không có khóa duy nhất sẽ âm thầm sửa sai row. Bản 192 dòng làm đúng điều đó với code.</p>
+
+<p>Còn một điểm tinh tế. Khi một điều kiện bị vi phạm, harness <strong>không tự đoán thay model</strong>. Nó trả lỗi về, và model tự sửa cách gọi ở lượt sau. Nghĩa là thông báo lỗi của tool cũng là một phần của vòng phản hồi. Thông báo càng chỉ rõ cách sửa thì agent càng tự gỡ được. Mẫu lỗi Anthropic đề xuất là <em>"Found 3 matches… Please provide more context to make a unique match."</em> (tạm dịch: "Tìm thấy 3 chỗ khớp… Hãy thêm context để chỉ khớp đúng một chỗ.")</p>
+
+<p><strong>Điều cần nhớ:</strong> Edit = <code>UPDATE</code> có optimistic locking và bắt buộc trúng đúng một row. Mỗi lần vi phạm, lỗi được trả về để model tự sửa, chứ harness không đoán hộ.</p>
+
+<h2>4. Thực hành trên máy thật (~15 phút)</h2>
+
+<p>Phần này là chỗ kiến thức biến thành kỹ năng. Đừng mở gợi ý sớm: phải tự vật lộn một chút thì mới nhớ lâu.</p>
+
+<h3>4a. Đọc trace của một phiên Claude Code</h3>
+<p>Claude Code lưu mỗi phiên thành một file JSONL trong <code>~/.claude/projects/&lt;đường-dẫn-repo&gt;/</code>. Mỗi dòng là một message: model nói gì, gọi tool nào, tool trả về gì. Hãy chọn một phiên <strong>có sửa code</strong> trong repo công việc (không phải phiên học bài này), rồi chạy:</p>
+
+<pre><code># 1. Chọn phiên: liệt kê project, rồi lấy phiên mới nhất của repo công việc
+ls ~/.claude/projects/
+F=$(ls -t ~/.claude/projects/&lt;thư-mục-repo&gt;/*.jsonl | head -1)
+
+# 2. Đếm tool theo loại
+jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name' "$F" | sort | uniq -c | sort -rn
+
+# 3. Xem trình tự tool call (tên + đối số chính)
+jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")
+  | .name + "  " + ((.input.file_path // .input.command // .input.pattern // "") | tostring | .[0:70] | gsub("\n";" "))' "$F" | head -60
+
+# 4. Các tool_result bị lỗi
+jq -r 'select(.type=="user") | .message.content[]? | select(.type=="tool_result" and .is_error==true)
+  | (.content | tostring | .[0:160])' "$F"</code></pre>
+
+<p>Viết ra câu trả lời cho bốn câu hỏi, rồi mới mở phần gợi ý:</p>
+<ol>
+  <li>Xếp các tool call vào ba nhóm: tìm hiểu, sửa, kiểm tra. Mỗi nhóm chiếm bao nhiêu? Lệnh Bash nào là kiểm tra (build, test), lệnh nào là tìm hiểu (<code>cat</code>, <code>rg</code>, <code>git log</code>)?</li>
+  <li>Trước mỗi lần Edit, agent có đọc file đó chưa (bằng Read, hoặc <code>cat</code>/<code>sed -n</code>)?</li>
+  <li>Chọn một tool_result bị lỗi. Ở lần gọi tool ngay sau, model đổi cách làm hay lặp lại y hệt?</li>
+  <li>Trước khi báo xong, phiên đó có bước kiểm tra nào không? Nếu không, anh có tin kết quả không?</li>
+</ol>
+
+<details>
+  <summary>Gợi ý đọc kết quả (mở sau khi đã tự trả lời)</summary>
+  <p><strong>Câu 1.</strong> Một phiên khỏe thường tìm hiểu nhiều hơn sửa khá rõ. Nếu sửa chiếm phần lớn mà gần như không có kiểm tra, agent đang "sửa mò". Bash làm được nhiều việc, nên phải nhìn vào lệnh cụ thể mới biết nó thuộc nhóm nào.</p>
+  <p><strong>Câu 2.</strong> Harness bắt buộc điều này, nên gần như luôn là có. Để ý thêm: <code>cat</code>/<code>sed -n</code>/<code>grep</code> trên một file (không pipe) cũng được tính là đã đọc.</p>
+  <p><strong>Câu 3.</strong> Đây là câu đáng giá nhất. Lỗi có thông báo rõ (ví dụ <code>old_string</code> không khớp) thường được sửa ngay ở lượt sau. Lỗi mơ hồ (timeout, lỗi không rõ nguyên nhân) hay khiến model lặp lại y hệt. Chất lượng thông báo lỗi quyết định agent có tự gỡ được hay không. Bài 5 (thiết kế tool) sẽ quay lại điểm này.</p>
+  <p><strong>Câu 4.</strong> Nếu phiên không có bước kiểm tra, đó là tín hiệu nên thêm một hook chạy test sau mỗi lần Edit (bài 9), hoặc một dòng trong CLAUDE.md yêu cầu kiểm tra trước khi báo xong (bài 8).</p>
+</details>
+
+<h3>4b. Bắt lỗi bản 192 dòng</h3>
+<p>Giờ anh đóng vai reviewer. Mở <a href="https://drive.google.com/file/d/1DxKa_autBOu9s8DvItodgUAwH_pBg7aR">coding_agent_from_scratch.py</a>, đọc hai hàm <code>run_coding_agent_loop</code> và <code>extract_tool_invocations</code> (khoảng 60 dòng). Tìm <strong>ít nhất 4 cách</strong> agent này sẽ hỏng khi chạy trên một repo Java thật, mỗi cách viết một câu. Viết xong rồi mới mở đáp án.</p>
+
+<details>
+  <summary>Đáp án: 5 lỗ và lớp bảo vệ tương ứng trong Claude Code</summary>
+  <ol>
+    <li><strong>Vòng trong không có giới hạn.</strong> Model cứ gọi tool mãi thì chương trình chạy mãi và đốt token mãi, giống một vòng retry không có max attempts. Harness production có giới hạn số lượt, budget và nút ngắt.</li>
+    <li><strong>Tool call sai format bị bỏ qua mà không báo gì.</strong> <code>extract_tool_invocations</code> bắt mọi exception rồi <code>continue</code>. Nếu model viết JSON bằng nháy đơn, danh sách tool call rỗng, và harness tưởng đó là <em>câu trả lời cuối</em>. Dùng function calling của API sẽ loại bỏ hẳn loại lỗi này.</li>
+    <li><strong>Tên tool lạ làm sập cả chương trình.</strong> <code>TOOL_REGISTRY[name]</code> ném <code>KeyError</code>, thay vì trả lỗi về cho model tự sửa.</li>
+    <li><strong>Edit không bắt đọc trước và không kiểm tra tính duy nhất</strong>, lại luôn thay chỗ đầu tiên. Ví dụ: sửa <code>return null;</code> trong một class có năm chỗ như vậy.</li>
+    <li><strong>Không có bash, nên không kiểm tra được.</strong> Không compile, không chạy test. Cũng không có quyền hay sandbox: <code>edit_file</code> với <code>old_str</code> rỗng ghi đè bất kỳ file nào mà không hỏi ai.</li>
+  </ol>
+  <p>Lỗ thứ 6, nếu anh thấy: hội thoại chỉ dài thêm mãi, không có bước tóm tắt (compaction). Trên repo lớn, nó sẽ sớm chạm giới hạn context window (bài 7 llm-foundation).</p>
+  <p>Tìm được 3–4 lỗ ở lần đầu là tốt rồi. Lỗ nào anh bỏ sót chính là thứ đáng nhớ nhất của bài này.</p>
+</details>
+
+<h2>5. Kiểm tra cuối bài</h2>
+<p>Bốn câu, mỗi câu ứng với một phần của bài. Chọn theo suy luận, đừng chọn theo cảm giác quen mắt.</p>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Edit báo lỗi <em>"Found 3 matches of the string"</em> (tìm thấy 3 chỗ khớp với chuỗi), trong khi anh chỉ muốn sửa một chỗ. Agent nên làm gì tiếp?</p>
+  <ul class="quiz-options">
+    <li data-correct>Thêm dòng xung quanh cho duy nhất</li>
+    <li>Ghi đè lại toàn bộ file mới</li>
+    <li>Cứ sửa cả ba chỗ một lượt</li>
+    <li>Dùng số dòng để chỉ vị trí</li>
+  </ul>
+  <p class="quiz-explain">Giống như thêm điều kiện vào <code>WHERE</code> cho tới khi chỉ trúng một row: kéo dài <code>old_string</code> thêm vài dòng xung quanh cho tới khi nó chỉ khớp đúng chỗ cần sửa. Ghi đè cả file tốn khoảng 67 lần output token (Hình 2). <code>replace_all</code> chỉ dùng khi thật sự muốn sửa mọi chỗ. Còn số dòng thì model xử lý kém (Aider).</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Vì sao agent 192 dòng dễ báo "xong" trong khi code vẫn còn lỗi compile?</p>
+  <ul class="quiz-options">
+    <li data-correct>Không có tool chạy lệnh để verify</li>
+    <li>Model GPT kém hơn Claude về code</li>
+    <li>Giao thức tool dạng text thiếu chuẩn</li>
+    <li>System prompt quá ngắn và chung chung</li>
+  </ul>
+  <p class="quiz-explain">Không có bash thì không compile, không chạy test được, nên vòng lặp thiếu hẳn bước kiểm tra. Đổi model hay viết prompt dài hơn cũng không bù được, vì model không có cách nào nhìn thấy kết quả thật.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Model trả về <code>tool: edit_file({'path': 'A.java', ...})</code>, tức là JSON dùng nháy đơn. Agent 192 dòng sẽ làm gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Coi đó là câu trả lời cuối</li>
+    <li>Báo lỗi format để model tự sửa</li>
+    <li>Crash ngay vì không parse được JSON</li>
+    <li>Tự sửa nháy đơn rồi chạy tiếp</li>
+  </ul>
+  <p class="quiz-explain"><code>raw_decode</code> ném exception, bị <code>except: continue</code> nuốt mất, nên danh sách tool call rỗng. Vòng trong hiểu là model không gọi tool nữa: in response ra rồi thoát. File không được sửa, còn người dùng thấy một dòng "tool: ..." và tưởng đã xong. Lỗi im lặng là loại lỗi tệ nhất trong một harness, vì không ai biết để sửa.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Claude Code bắt buộc Read trước Edit. Điều kiện này chủ yếu chặn failure nào?</p>
+  <ul class="quiz-options">
+    <li data-correct>Sửa theo nội dung đoán hoặc cũ</li>
+    <li>Tốn quá nhiều output token khi sửa</li>
+    <li>Hai agent cùng lúc ghi một file</li>
+    <li>Model không biết file có tồn tại</li>
+  </ul>
+  <p class="quiz-explain">Không đọc file mà vẫn viết ra được <code>old_string</code> nghĩa là model đang dựa vào trí nhớ hoặc phỏng đoán, tức là hallucination ở dạng code (bài 2 llm-foundation). Giống optimistic locking: bắt đọc trước để <code>old_string</code> lấy từ nội dung thật, mới nhất, đang nằm trong context.</p>
+</div>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>Tóm lại</h2>
+<ul>
+  <li><strong>Model nghĩ, harness làm.</strong> Model chỉ sinh text, mọi thao tác thật và mọi cơ chế an toàn nằm ở harness.</li>
+  <li><strong>Ba pha: tìm hiểu, sửa, kiểm tra.</strong> Thiếu pha kiểm tra thì agent chỉ còn đoán; bash là tool đáng giá nhất.</li>
+  <li><strong>Edit = <code>UPDATE</code> an toàn.</strong> Đọc trước, khớp chính xác, trúng đúng một chỗ. Sai thì trả lỗi rõ ràng để model tự sửa.</li>
+</ul>
+<p>Bài 2 sẽ mở phần còn lại của harness: system prompt, nơi người ta "dạy" model cách dùng các tool này.</p>
+
+<h2>Đọc thêm</h2>
+<p><strong>Nguồn chính:</strong> <a href="https://www.mihaileric.com/The-Emperor-Has-No-Clothes/">Mihail Eric — "The Emperor Has No Clothes: How to Code Claude Code in 200 Lines of Code"</a> (tạm dịch: "Hoàng đế cởi truồng: viết Claude Code trong 200 dòng code"). Đây là bản blog của bài đọc Week 1; có cả <a href="https://youtube.com/watch?v=s7ZzkdvCMDY">video</a>. Đọc xong, mở <a href="https://code.claude.com/docs/en/how-claude-code-works">How Claude Code works</a> để thấy các lớp mà bản 200 dòng còn thiếu. Nếu thích đọc Go, có bản dễ theo dõi cho dân backend: <a href="https://ampcode.com/notes/how-to-build-an-agent">Thorsten Ball — How to Build an Agent</a>.</p>
+
+<div class="callout">
+  <span class="label">Báo lại cho tôi</span>
+  <p>(1) Điểm khởi động <strong>x/2</strong> và điểm cuối bài <strong>y/4</strong>, kèm câu sai nếu có. (2) Output lệnh đếm tool ở mục 4a và câu trả lời cho 4 câu hỏi. (3) Danh sách lỗ anh tự tìm được ở mục 4b, trước khi mở đáp án. Chỗ nào chưa rõ, cứ hỏi tôi: hỏi lại là một phần của việc học, không phải dấu hiệu học chậm.</p>
+</div>
+
+<nav class="lesson-nav">
+  <span class="disabled">← (bài đầu tiên)</span>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0002-giai-phau-system-prompt.html">Bài 2: Giải phẫu system prompt →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/diagram.js"></script>
+</body>
+</html>

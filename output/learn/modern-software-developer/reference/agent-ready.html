@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Agent-Ready Codebase Scorecard &amp; Audit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Agent-Ready Codebase · cập nhật 2026-10-25 · <a href="../lessons/0011-agent-ready-codebase-cham-diem-va-audit.html">Bài 11</a> · <a href="subagents.html">Subagents</a> · <a href="hooks.html">Hooks</a> · <a href="instruction-files.html">Instruction files</a> · <a href="glossary.html">Glossary</a> · <a href="lo-trinh.html">Lộ trình</a></p>
+
+<h1>Agent-Ready Codebase Scorecard</h1>
+<p class="subtitle">Khung đánh giá định lượng 100 điểm và phương pháp audit biến một codebase truyền thống thành môi trường phát triển lý tưởng cho Autonomous Coding Agent.</p>
+
+<h2>1. Bốn trụ cột của Agent-Readiness</h2>
+<table>
+  <tr><th>Trụ cột</th><th>Bản chất cốt lõi</th><th>Rào cản thường gặp</th><th>Giải pháp Agent-Ready</th></tr>
+  <tr>
+    <td><strong>1. Structure &amp; Discoverability</strong></td>
+    <td>Repo tự diễn giải, ranh giới module rõ ràng, tài liệu hóa quy ước khác thường.</td>
+    <td>Monorepo lộn xộn, tài liệu thất lạc trên Confluence, không có instruction file chuẩn.</td>
+    <td>File <code>AGENTS.md</code> ngắn gọn (&lt;200 dòng), bố cục thư mục chuẩn Maven/Gradle, non-standard conventions rõ ràng.</td>
+  </tr>
+  <tr>
+    <td><strong>2. Deterministic Environment</strong></td>
+    <td>Môi trường build đóng gói hermetic, một lệnh chạy ngay, không phụ thuộc máy cá nhân.</td>
+    <td>Cài đặt môi trường thủ công tốn 2 ngày, phụ thuộc biến môi trường ngầm định.</td>
+    <td>Wrapper script chuẩn (<code>./mvnw</code>, <code>./gradlew</code>), <code>docker-compose.yml</code> cho DB/Redis, file <code>.env.example</code>.</td>
+  </tr>
+  <tr>
+    <td><strong>3. Verifiability &amp; Fast Gates</strong></td>
+    <td>Vòng lặp xác minh siêu tốc để agent chạy ReAct (gather $\to$ act $\to$ verify).</td>
+    <td>Test suite chạy mất 40 phút; linter chỉ chạy trên CI; lỗi chỉ bắt được khi build production.</td>
+    <td>Lệnh unit test subset chạy &lt;30s, tool auto-format CLI (<code>spotlessApply</code>), PostToolUse hook tự kiểm tra.</td>
+  </tr>
+  <tr>
+    <td><strong>4. Safety &amp; Guardrails</strong></td>
+    <td>Rào chắn bảo vệ ngăn chặn agent phá hoại hoặc làm rò rỉ thông tin nhạy cảm.</td>
+    <td>Hardcoded secrets trong repo, agent có thể chạy <code>DROP TABLE</code> hoặc sửa file migration.</td>
+    <td>PreToolUse hook chặn sửa <code>db/migration/*.sql</code>, secret scanner (gitleaks), tài khoản DB dev bị giới hạn quyền.</td>
+  </tr>
+</table>
+
+<h2>2. Bảng chấm điểm Agent-Ready Scorecard (100 điểm)</h2>
+<table>
+  <tr><th>#</th><th>Tiêu chí đánh giá</th><th>Điểm tối đa</th><th>Yêu cầu đạt điểm tối đa (Full Score)</th></tr>
+  <tr>
+    <td>1</td>
+    <td><strong>Instruction File (AGENTS.md)</strong></td>
+    <td>10</td>
+    <td>Có file ở root, &lt;200 dòng, chứa lệnh build/test chuẩn, liệt kê non-standard conventions, không nhồi nhét văn xuôi thừa.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>Hermetic Build &amp; Dependency</strong></td>
+    <td>10</td>
+    <td>Có wrapper (<code>./gradlew</code> / <code>./mvnw</code>), dependency được lock version rõ ràng, không yêu cầu cài SDK toàn cục.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>Fast Feedback Test Suite</strong></td>
+    <td>10</td>
+    <td>Có lệnh chạy unit test subset của 1 class/package hoàn thành trong <strong>dưới 15 giây</strong>.</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><strong>Automated Formatting &amp; Linting</strong></td>
+    <td>10</td>
+    <td>Có lệnh CLI sửa format tự động (ví dụ <code>./gradlew spotlessApply</code>), chạy &lt;5 giây.</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td><strong>Deterministic Local Dependencies</strong></td>
+    <td>10</td>
+    <td>Mọi phụ thuộc ngoại vi (PostgreSQL, Kafka, Redis) dựng được bằng 1 lệnh <code>docker compose up -d</code> hoặc Testcontainers.</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td><strong>Static Typing &amp; Explicit Contracts</strong></td>
+    <td>10</td>
+    <td>Tận dụng Java Strong Typing, DTO có validation annotations (<code>@NotNull</code>, <code>@Valid</code>), API có OpenAPI/Swagger.</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td><strong>Package Cohesion &amp; Clean Boundaries</strong></td>
+    <td>10</td>
+    <td>Phân tách domain/layer rõ ràng (Clean / Hexagonal Architecture), không có quan hệ phụ thuộc vòng tròn (circular dependency).</td>
+  </tr>
+  <tr>
+    <td>8</td>
+    <td><strong>Automated Guardrails &amp; Hooks</strong></td>
+    <td>10</td>
+    <td>Có Lifecycle Hook ngăn chặn việc sửa đổi file migration database nhạy cảm hoặc chạy lệnh bash phá hủy.</td>
+  </tr>
+  <tr>
+    <td>9</td>
+    <td><strong>Mocking &amp; Fixtures Readiness</strong></td>
+    <td>10</td>
+    <td>Có sẵn bộ dữ liệu mẫu (test fixtures) và Mockito mocks chuẩn để agent viết test mà không cần truy cập network ngoài.</td>
+  </tr>
+  <tr>
+    <td>10</td>
+    <td><strong>Clean Logging &amp; Actionable Errors</strong></td>
+    <td>10</td>
+    <td>Thông báo lỗi compiler/test rõ ràng, không in stacktrace rác hàng nghìn dòng làm tràn context window.</td>
+  </tr>
+</table>
+
+<h2>3. Phân loại cấp độ sẵn sàng</h2>
+<ul>
+  <li><strong>0 – 39 điểm: Agent-Hostile (Thù địch với Agent)</strong><br>
+  Agent vào là kẹt: không thể build local, test mất hàng giờ hoặc lỗi tùm lum, thiếu thông tin môi trường. Agent sẽ làm hỏng code hoặc làm cháy ngân sách token.</li>
+  <li><strong>40 – 70 điểm: Agent-Tolerant (Chấp nhận được)</strong><br>
+  Agent làm việc được nhưng cần người dùng cầm tay chỉ việc, phải copy-paste lỗi thủ công, chi phí token cao do context bị ô nhiễm.</li>
+  <li><strong>71 – 90 điểm: Agent-Friendly (Thân thiện)</strong><br>
+  Agent tự khám phá code, sửa mã nguồn, tự chạy unit test và linter để sửa sai. Năng suất lập trình tăng rõ rệt (2–3x).</li>
+  <li><strong>91 – 100 điểm: Agent-Native (Tự hành hoàn hảo)</strong><br>
+  Codebase được tối ưu hóa như một API: agent nhận task, tự phân nhánh git worktree, tự code, tự verify qua test gate/lint gate và tạo Pull Request kèm báo cáo sạch sẽ.</li>
+</ul>
+
+<h2>4. Danh sách hành động ưu tiên (Prioritized Action Plan)</h2>
+<ol>
+  <li><strong>Quick Wins (Làm trong 1–2 giờ — ROI cao nhất):</strong>
+    <ul>
+      <li>Tạo <code>AGENTS.md</code> chuẩn ở root repo (lệnh build, lệnh test 1 class, format style).</li>
+      <li>Cấu hình lệnh auto-format (Spotless / Prettier) vào package/build script.</li>
+    </ul>
+  </li>
+  <li><strong>Medium-term (Làm trong 1–2 ngày):</strong>
+    <ul>
+      <li>Chia tách test suite: tách riêng Unit Tests (nhanh) và Integration Tests (chậm).</li>
+      <li>Gắn <code>PostToolUse</code> hook chạy linter và unit test tự động sau mỗi lần Edit.</li>
+      <li>Tạo <code>docker-compose.yml</code> cho các dependency local.</li>
+    </ul>
+  </li>
+  <li><strong>Long-term (Cải tiến kiến trúc):</strong>
+    <ul>
+      <li>Dọn dẹp circular dependencies, đóng gói DTO/Contract rõ ràng.</li>
+      <li>Tích hợp Testcontainers và fixtures test tái sử dụng.</li>
+    </ul>
+  </li>
+</ol>
+
+</main>
+</body>
+</html>

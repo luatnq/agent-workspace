@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lộ trình — The Modern Software Developer</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Lộ trình · cập nhật 2026-10-25 · <a href="../lessons/0001-ben-trong-coding-agent.html">Bài 1</a> · <a href="../lessons/0009-hooks-lint-test-gate-guardrail.html">Bài 9 (mới nhất)</a> · <a href="../../llm-foundation/reference/glossary.html">Glossary (llm-foundation)</a></p>
+
+<h1>Lộ trình khóa học</h1>
+<p class="subtitle">Khung là 10 tuần của <a href="https://themodernsoftware.dev/">Stanford CS146S</a>. Các mảng "AI agents core" của <a href="https://roadmap.sh/ai-agents">roadmap.sh/ai-agents</a> mà CS146S không dạy được chèn vào tuần liên quan. Phần nền đã học ở <a href="../../llm-foundation/">llm-foundation</a> thì chỉ ôn giãn cách, không dạy lại.</p>
+
+<div class="callout">
+  <span class="label">Cách đọc bảng</span>
+  <p>Mỗi dòng là một bài, ngồi một lần là xong (20–40 phút). Bài tập làm trên repo thật: <code>my-agent</code> hoặc repo công việc. Lộ trình là bản nháp: thứ tự và số bài sẽ đổi theo learning record. Nhiều tuần của CS146S 2026 chưa công bố bài đọc; tuần nào chưa có thì dùng bài đọc của bản Fall 2025.</p>
+</div>
+
+<h2>Module 1 — Bên trong coding agent (W1)</h2>
+<table>
+  <tr><th>#</th><th>Bài &amp; bài tập</th><th>CS146S</th><th>roadmap.sh</th><th>Ôn từ llm-foundation</th></tr>
+  <tr><td>1</td><td><strong>Agent loop, bộ tool, edit bằng thay chuỗi.</strong> Đọc trace của một phiên Claude Code thật.</td><td>W1: LLM, agent loop, core tools</td><td>agent loop, tool definition, file system access</td><td>Bài 3 (tool loop), bài 7 (cache)</td></tr>
+  <tr><td>2</td><td><strong>Giải phẫu system prompt của coding agent.</strong> Đọc prompt Codex CLI, đối chiếu với CLAUDE.md của my-agent.</td><td>W1: system prompts &amp; tool definitions</td><td>ReAct, planner–executor, reasoning vs standard model</td><td>Bài 4 (workflow vs agent)</td></tr>
+</table>
+
+<h2>Module 2 — Context engineering nâng cao &amp; MCP (W2)</h2>
+<table>
+  <tr><th>#</th><th>Bài &amp; bài tập</th><th>CS146S</th><th>roadmap.sh</th><th>Ôn từ llm-foundation</th></tr>
+  <tr><td>3</td><td><strong>Prompting nâng cao, RePPIT, spec-driven.</strong> Chạy một task theo RePPIT trên repo công việc.</td><td>W2: prompting, RePPIT, SDD</td><td>CoT, tree-of-thought, self-critique</td><td>Bài 7 (context rot)</td></tr>
+  <tr><td>4</td><td><strong>MCP: host, client, server, transport.</strong> Viết một MCP server nhỏ cho việc thật.</td><td>W2: MCP fundamentals</td><td>MCP hosts / clients / servers</td><td>Bài 3</td></tr>
+  <tr><td>5</td><td><strong>Thiết kế tool cho agent, test tool.</strong> Review lại bộ tool của MCP server ở bài 4.</td><td>W2: tool ergonomics</td><td>tool definition, unit testing for tools</td><td>Bài 6 (eval)</td></tr>
+</table>
+
+<h2>Module 3 — Skills, CLI &amp; memory (W3)</h2>
+<table>
+  <tr><th>#</th><th>Bài &amp; bài tập</th><th>CS146S</th><th>roadmap.sh</th><th>Ôn từ llm-foundation</th></tr>
+  <tr><td>6</td><td><a href="../lessons/0006-skill-va-progressive-disclosure.html"><strong>Skill = SKILL.md + scripts, progressive disclosure.</strong></a> Audit các skill trong <code>my-agent/.claude/skills</code>.</td><td>W3: skills, web skills, CLI</td><td>git &amp; terminal usage, web search</td><td>Bài 7 (context là tài nguyên khan hiếm)</td></tr>
+  <tr><td>7</td><td><a href="../lessons/0007-agent-memory.html"><strong>Agent memory.</strong></a> Đối chiếu <code>memory/</code> của my-agent với lý thuyết.</td><td>(không có)</td><td>short/long-term, episodic vs semantic, forgetting</td><td>Bài 1 (stateless)</td></tr>
+</table>
+
+<h2>Module 4 — Tùy biến agent &amp; repo (W4)</h2>
+<table>
+  <tr><th>#</th><th>Bài &amp; bài tập</th><th>CS146S</th><th>roadmap.sh</th><th>Ôn từ llm-foundation</th></tr>
+  <tr><td>8</td><td><a href="../lessons/0008-claude-md-vs-agents-md.html"><strong>CLAUDE.md vs AGENTS.md: cái gì đặt ở đâu.</strong></a> Viết AGENTS.md cho repo công việc.</td><td>W4: CLAUDE.md, AGENTS.md</td><td>provide additional context</td><td>Bài 7 (prefix cache)</td></tr>
+  <tr><td>9</td><td><a href="../lessons/0009-hooks-lint-test-gate-guardrail.html"><strong>Hooks: lint gate, test gate, guardrail.</strong></a> Gắn hook chạy test Java sau mỗi lần Edit.</td><td>W4: hooks</td><td>stopping criteria, human-in-the-loop</td><td>—</td></tr>
+  <tr><td>10</td><td><a href="../lessons/0010-subagent-va-multi-agent-planner-implementer-reviewer.html"><strong>Subagent &amp; multi-agent: planner / implementer / reviewer.</strong></a> So sánh nhanh với LangGraph/CrewAI.</td><td>W4: subagent patterns</td><td>multi-agents, DAG agents, frameworks</td><td>Bài 4 (orchestrator-workers)</td></tr>
+</table>
+
+<h2>Module 5 — Codebase sẵn sàng cho agent &amp; eval (W5)</h2>
+<table>
+  <tr><th>#</th><th>Bài &amp; bài tập</th><th>CS146S</th><th>roadmap.sh</th><th>Ôn từ llm-foundation</th></tr>
+  <tr><td>11</td><td><a href="../lessons/0011-agent-ready-codebase-cham-diem-va-audit.html"><strong>Agent-ready codebase: chấm điểm và audit.</strong></a> Audit một repo công việc, ra danh sách việc có ưu tiên.</td><td>W5: structure, docs, tests, checks</td><td>—</td><td>—</td></tr>
+  <tr><td>12</td><td><a href="../lessons/0012-eval-cho-coding-agent.html"><strong>Eval cho coding agent: đo "có tốt hơn không".</strong></a> Dựng một eval set nhỏ cho CLAUDE.md trước và sau khi sửa.</td><td>(không có, bổ sung)</td><td>integration testing for flows, DeepEval, Ragas</td><td>Bài 6 (eval)</td></tr>
+</table>
+
+<h2>Module 6 — Agentic code review (W6)</h2>
+<table>
+  <tr><th>#</th><th>Bài &amp; bài tập</th><th>CS146S</th><th>roadmap.sh</th><th>Ôn từ llm-foundation</th></tr>
+  <tr><td>13</td><td><strong>AI review bắt được gì, sót gì; các kiến trúc review.</strong> Chạy review trên một MR cũ đã biết bug.</td><td>W6: catches / misses, architectures</td><td>self-critique</td><td>Bài 2 (hallucination)</td></tr>
+  <tr><td>14</td><td><strong>Custom rules và đưa vào PR workflow của team.</strong> Đo skill <code>review-java</code> bằng eval.</td><td>W6: custom rules, PR workflow</td><td>—</td><td>Bài 6</td></tr>
+</table>
+
+<h2>Module 7 — Security (W7)</h2>
+<table>
+  <tr><th>#</th><th>Bài &amp; bài tập</th><th>CS146S</th><th>roadmap.sh</th><th>Ôn từ llm-foundation</th></tr>
+  <tr><td>15</td><td><strong>Prompt injection và bề mặt tấn công riêng của agent.</strong> Lập threat model cho my-agent (MCP, Gmail, web).</td><td>W7: prompt injection</td><td>prompt injection, tool sandboxing &amp; permission, red team</td><td>Bài 3 (tool result là untrusted)</td></tr>
+  <tr><td>16</td><td><strong>SAST/SCA, secret leak, agent hỗ trợ triage và sửa.</strong> Chạy Semgrep và nhờ agent triage kết quả.</td><td>W7: SAST/SCA, remediation</td><td>PII redaction</td><td>—</td></tr>
+</table>
+
+<h2>Module 8 — Background agents &amp; observability (W8)</h2>
+<table>
+  <tr><th>#</th><th>Bài &amp; bài tập</th><th>CS146S</th><th>roadmap.sh</th><th>Ôn từ llm-foundation</th></tr>
+  <tr><td>17</td><td><strong>Background agents, fleet song song, pipeline issue-to-PR.</strong> Dựng một trigger GitHub → agent → PR.</td><td>W8: async, fleets, triggers</td><td>remote / cloud agents</td><td>—</td></tr>
+  <tr><td>18</td><td><strong>Observability cho agent: trace, span, metric.</strong> Trace một agent bằng OpenTelemetry.</td><td>(W10: running agents post-deployment)</td><td>structured logging &amp; tracing, Langfuse, OpenLLMetry</td><td>Bài 8 (metric vLLM)</td></tr>
+</table>
+
+<h2>Module 9 — Team AI-native (W9)</h2>
+<table>
+  <tr><th>#</th><th>Bài &amp; bài tập</th><th>CS146S</th><th>roadmap.sh</th><th>Ôn từ llm-foundation</th></tr>
+  <tr><td>19</td><td><strong>LLM gateway, model routing, tối ưu chi phí.</strong> Ước lượng chi phí coding agent cho cả team một tháng.</td><td>W9: gateways, routing, cost</td><td>pricing, open vs closed-weight</td><td>Bài 1, 7, 8</td></tr>
+  <tr><td>20</td><td><strong>MCP portal, cấp quyền tool tập trung, mô hình adoption.</strong> Viết đề xuất rollout cho team.</td><td>W9: MCP portals, adoption</td><td>data privacy</td><td>—</td></tr>
+</table>
+
+<h2>Module 10 — Software factory &amp; tổng kết (W10)</h2>
+<table>
+  <tr><th>#</th><th>Bài &amp; bài tập</th><th>CS146S</th><th>roadmap.sh</th><th>Ôn từ llm-foundation</th></tr>
+  <tr><td>21</td><td><strong>Hệ thống tự chạy, tự cải thiện; vận hành và bảo mật agent sau deploy.</strong></td><td>W10: software factory</td><td>observation &amp; reflection</td><td>Ôn trộn toàn khóa</td></tr>
+  <tr><td>22</td><td><strong>Capstone: câu chuyện phỏng vấn.</strong> Viết và nói bằng tiếng Anh 3 câu chuyện từ các bài tập đã làm.</td><td>—</td><td>—</td><td>—</td></tr>
+</table>
+
+<h2>Không đưa vào lộ trình</h2>
+<ul>
+  <li>Generation controls (temperature, top-p, penalties): chỉ nhắc khi cần, vì coding agent hầu như không chỉnh các tham số này.</li>
+  <li>Use case của roadmap không liên quan mission (NPC game AI, email/SMS, data analysis).</li>
+  <li>Guest talk của CS146S: chỉ trích ý khi có bản ghi công khai và liên quan đến bài.</li>
+</ul>
+
+</main>
+</body>
+</html>

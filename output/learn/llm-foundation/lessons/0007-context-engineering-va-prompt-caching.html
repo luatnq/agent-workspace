@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 7 — Context engineering &amp; prompt caching</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">LLM Foundation · Bài 0007 · 2026-09-26 · ~25 phút · <a href="../reference/context-and-caching.html">Cheat sheet: Context &amp; caching</a> · <a href="0006-eval.html">Bài 6</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Context engineering &amp; prompt caching</h1>
+<p class="subtitle">Hai lực kéo ngược nhau trên cùng một mảng token. Caching muốn prefix <em>dài và đứng yên</em>. Context engineering muốn context <em>nhỏ và sạch</em>. Thiết kế một LLM app chính là quyết định cái gì đứng yên ở đầu, cái gì được phép thay đổi ở cuối, và ai là người quyết định.</p>
+
+<div class="callout">
+  <span class="label">Cái anh mang về sau bài này</span>
+  <p>Tự tính được lúc nào cache có lãi, với cả TTL 5 phút và 1 giờ. Biết thứ tự prefix và những thay đổi làm cache chết âm thầm. Hiểu vì sao KB 80k token nên nằm luôn trong prompt. Và biết bốn cách giữ context sạch trong agent chạy dài, kèm cái giá mỗi cách phải trả về cache.</p>
+</div>
+
+<h2>0. Ba câu ôn giãn cách — làm trước khi đọc</h2>
+
+<p>Ba câu này nhắm đúng ba lỗ của bài 6 và bài 1, nhưng được hỏi <em>từ phía khác</em>, không lặp lại câu cũ. Trả lời từ trí nhớ và ghi lại con số.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Giãn cách (spacing): hỏi lại một ý sau vài ngày, dưới dạng khác, là cách đo storage strength. Nếu vẫn trả lời đúng khi câu hỏi đổi hình dạng thì mới là hiểu, không phải nhớ đáp án.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Bài 1: system prompt 20.000 token, gọi đúng mỗi 10 phút. Lần này đổi cache sang TTL 1 giờ. Sau một giờ (6 lần gọi), phần system prompt so với không cache thì sao?</p>
+  <ul class="quiz-options">
+    <li data-correct>Rẻ hơn, nhờ refresh khi hit</li>
+    <li>Đắt hơn, vì write tốn 2×</li>
+    <li>Như cũ, vì TTL quá dài</li>
+    <li>Lỗ, vì mỗi lần là write</li>
+  </ul>
+  <p class="quiz-explain">Lần đầu là write, tốn 2× giá input. Lần gọi sau 10 phút vẫn nằm trong TTL 1 giờ nên là hit, tốn 0.1×, <em>và mỗi lần hit làm mới TTL miễn phí</em>. Cộng lại 2 + 5 × 0.1 = 2.5 đơn vị, so với 6 đơn vị khi không cache, tức rẻ hơn khoảng 58%. Với TTL 5 phút thì cache hết hạn trước mỗi lần gọi, nên lần nào cũng là write, đó là chỗ anh đã trượt ở bài 1.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Agent gọi tool search, kết quả là 30.000 token JSON. Ai quyết định bao nhiêu phần trong đó đi vào context ở lượt gọi sau?</p>
+  <ul class="quiz-options">
+    <li data-correct>Code app của anh</li>
+    <li>Model tự cắt bớt</li>
+    <li>Runtime Claude tự lọc</li>
+    <li>Tokenizer tự nén lại</li>
+  </ul>
+  <p class="quiz-explain">Model chỉ sinh <code>tool_use</code>. App thực thi tool, rồi <em>chính app</em> viết <code>tool_result</code> và gửi lại toàn bộ lịch sử (stateless, bài 1). Vì vậy cắt trường thừa, phân trang, hay tóm tắt đều là việc của app. Ngay cả khi bật tính năng server-side như context editing, thì app vẫn là bên bật và cấu hình nó. Đây là bài 3, nhìn từ phía context.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Rubric eval của team: đúng 1 điểm, sai 0, "không đủ thông tin" cũng 0. Prompt B thắng prompt A. Nghi ngờ gì trước tiên?</p>
+  <ul class="quiz-options">
+    <li data-correct>B đoán bạo hơn A</li>
+    <li>B ngắn gọn hơn A</li>
+    <li>B dùng ít token hơn</li>
+    <li>B trích nguồn nhiều hơn</li>
+  </ul>
+  <p class="quiz-explain">Khi sai và "không biết" cùng được 0 điểm, đoán luôn có kỳ vọng điểm cao hơn bỏ trống. Prompt nào khiến model đoán nhiều hơn sẽ thắng rubric này, kể cả khi nó sai tự tin nhiều hơn. Cần tách ba mức (đúng / abstain / sai), phạt sai nặng hơn abstain, rồi chấm lại (Kalai et al., bài 6 mục 6).</p>
+</div>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Context engineering: câu hỏi không còn là "viết prompt thế nào"</h2>
+
+<p>Anthropic định nghĩa:<span class="sidenote-ref"></span></p>
+<blockquote><p>"Context engineering refers to the set of strategies for curating and maintaining the optimal set of tokens (information) during LLM inference, including all the other information that may land there outside of the prompts."</p></blockquote>
+<aside class="sidenote"><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic Engineering — "Effective context engineering for AI agents" (09/2025)</a>. Primary source của nửa đầu bài này.</aside>
+
+<p>Chỗ khác với prompt engineering là prompt viết một lần, còn context thì <em>được chọn lại ở mỗi lượt gọi</em>: "the curation phase happens each time we decide what to pass to the model". Với agent, phần lớn context không do anh viết tay mà đến từ tool result, lịch sử, file. Ai cầm quyền chọn? Vẫn là app, giống như ai cầm quyền thực thi tool ở bài 3.</p>
+
+<p>Vì sao phải chọn, khi window đã lên 1M? Hai lý do đã gặp ở bài 1, giờ có tên gọi chính thức:</p>
+<ul>
+  <li><strong>Context rot.</strong> "As the number of tokens in the context window increases, the model's ability to accurately recall information from that context decreases." Nghiên cứu của Chroma trên 18 model cho thấy độ chính xác giảm theo độ dài input, kể cả với task đơn giản.<span class="sidenote-ref"></span></li>
+  <li><strong>Attention budget.</strong> Model có một "ngân sách chú ý" và mỗi token thêm vào đều tiêu một phần. Token nhiễu không vô hại: nó lấy mất sự chú ý của token có ích.</li>
+</ul>
+<aside class="sidenote"><a href="https://www.trychroma.com/research/context-rot">Chroma — "Context Rot" (07/2025)</a>. Chi tiết đáng chú ý: haystack có mạch logic mạch lạc lại làm model <em>kém hơn</em> haystack bị xáo trộn. Tài liệu nội bộ viết mạch lạc nhưng không liên quan tới câu hỏi chính là loại gây nhiễu tệ nhất.</aside>
+
+<p>Mục tiêu được Anthropic chốt trong một câu:</p>
+<blockquote><p>"Good context engineering means finding the smallest possible set of high-signal tokens that maximize the likelihood of some desired outcome."</p></blockquote>
+
+<h2>2. Prompt caching: cơ chế trong 5 dòng</h2>
+
+<p>Mình chỉ nhắc lại những gì bài 1 đã nói lướt qua, lần này đủ để anh debug được:<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Doc: Prompt caching</a>, đọc ngày 2026-09-26. Các con số dưới đây lấy từ trang này, không lấy từ trí nhớ.</aside>
+
+<ol>
+  <li><strong>Prefix theo thứ tự cố định:</strong> "<code>tools</code>, <code>system</code>, and <code>messages</code> (in that order), up to and including the block designated with <code>cache_control</code>." Cache khớp theo prefix: chỉ cần một byte ở phía trước đổi thì mọi thứ phía sau đều là miss.</li>
+  <li><strong>Tối đa 4 breakpoint.</strong> Write chỉ xảy ra tại breakpoint. Khi read, hệ thống dò ngược tối đa 20 block tính từ mỗi breakpoint. Hội thoại dài hơn 20 block kể từ lần write gần nhất thì cần thêm breakpoint.</li>
+  <li><strong>TTL 5 phút mặc định, hoặc <code>"ttl": "1h"</code>.</strong> "The cache is refreshed for no additional cost each time the cached content is used". Traffic đều đặn giữ cho cache luôn ấm.</li>
+  <li><strong>Độ dài tối thiểu phụ thuộc model:</strong> từ 512 token (Opus 5.5, Opus 5) đến 4.096 token (Haiku 4.5). Prompt ngắn hơn ngưỡng thì <em>không được cache</em>, và API không báo lỗi gì.</li>
+  <li><strong>Kiểm chứng bằng số, không bằng niềm tin:</strong> response có <code>cache_creation_input_tokens</code> và <code>cache_read_input_tokens</code>. Đây là assertion L1 hoàn hảo (bài 6): nếu read = 0 ở request thứ hai trở đi thì cache đang chết.</li>
+</ol>
+
+<h3>Những gì làm cache chết âm thầm</h3>
+<table>
+  <tr><th>Thay đổi</th><th>Mất cache ở tầng</th><th>Ví dụ trong một Spring service</th></tr>
+  <tr><td>Tool definitions</td><td>tools + system + messages</td><td>Danh sách tool build từ một <code>Set</code>/<code>Map</code> không đảm bảo thứ tự, nên JSON khác nhau giữa các pod</td></tr>
+  <tr><td>Nội dung system prompt</td><td>system + messages</td><td><code>"Hôm nay là " + LocalDateTime.now()</code> ở đầu system prompt</td></tr>
+  <tr><td>Bật/tắt web search, citations</td><td>system + messages</td><td>Feature flag bật theo từng user</td></tr>
+  <tr><td><code>tool_choice</code>, ảnh</td><td>chỉ messages</td><td>Ép <code>tool_choice</code> ở lượt đầu rồi bỏ ở lượt sau</td></tr>
+  <tr><td>Tham số thinking / effort</td><td>luôn mất messages</td><td>Router tự tăng effort cho câu hỏi "khó"</td></tr>
+</table>
+
+<p>Quy tắc rút ra: <strong>thứ không đổi đặt trước, thứ hay đổi đặt sau.</strong> Ngày giờ, tên user, quyền truy cập thì đưa xuống message user cuối cùng, đừng để trong system prompt. Serialize tool definitions theo thứ tự cố định (sort theo tên). Cache còn được cô lập theo workspace: hai service dùng hai workspace khác nhau sẽ không dùng chung cache, dù prefix giống hệt.</p>
+
+<h2>3. Kinh tế: đọc bảng giá hôm nay, không phải hôm qua</h2>
+
+<p>Bài 1 dạy "read = 0.1× giá input". Tính đến hôm nay, câu đó <strong>không còn đúng cho mọi model</strong>:</p>
+
+<table>
+  <tr><th>Model</th><th class="num">Input</th><th class="num">Write 5m / 1h</th><th class="num">Read</th><th class="num">Read / input</th></tr>
+  <tr><td>Opus 5.5</td><td class="num">$4</td><td class="num">$5 / $8</td><td class="num">$0.20</td><td class="num">0.05×</td></tr>
+  <tr><td>Sonnet 5</td><td class="num">$2</td><td class="num">$2.50 / $4</td><td class="num">$0.20</td><td class="num">0.1×</td></tr>
+  <tr><td>Haiku 4.5</td><td class="num">$1</td><td class="num">$1.25 / $2</td><td class="num">$0.10</td><td class="num">0.1×</td></tr>
+</table>
+<p class="meta">USD / MTok, theo doc Prompt caching ngày 2026-09-26. Fable 5.1 và Mythos 5.1 có read 0.025×.</p>
+
+<p>Để ý dòng Opus 5.5 và Sonnet 5: <strong>giá cache read bằng nhau</strong> ($0.20/MTok). Với một ứng dụng mà phần lớn input là prefix được cache (KB lớn, system prompt dài), chênh lệch giá giữa hai model co lại chủ yếu còn ở phần output và phần input không cache. "Đổi sang Sonnet cho rẻ" cần được tính lại, không thể kết luận theo phản xạ. Đây chính là kỹ năng trong mission: đọc pricing page của một model mới và biết nó thay đổi gì cho hệ thống của mình.</p>
+
+<h3>Điểm hoà vốn</h3>
+<ul>
+  <li><strong>TTL 5 phút:</strong> write 1.25× + 1 read 0.1× = 1.35× &lt; 2× không cache. Cần ít nhất <strong>1 hit</strong> trong 5 phút.</li>
+  <li><strong>TTL 1 giờ:</strong> 2× + 1 read = 2.1×, vẫn đắt hơn 2×. 2× + 2 read = 2.2× &lt; 3×. Cần ít nhất <strong>2 hit</strong> trong giờ.</li>
+</ul>
+<p>Chọn TTL theo <em>khoảng cách giữa các request</em>, không theo cảm giác "1 giờ thì an toàn hơn". Gọi dày hơn mỗi 5 phút thì dùng 5m (write rẻ hơn, hit liên tục refresh). Gọi thưa kiểu mỗi 10–30 phút thì dùng 1h. Gọi thưa hơn 1 giờ thì đừng cache.</p>
+
+<h3>Vá lỗ bài 6: KB 80.000 token</h3>
+<p>Anthropic viết: "If your knowledge base is smaller than 200,000 tokens (about 500 pages of material), you can just include the entire knowledge base in the prompt", kèm prompt caching.<span class="sidenote-ref"></span> Tính với Sonnet 5, 2.000 câu hỏi rải đều trong ngày, chỉ tính phần KB:</p>
+<aside class="sidenote"><a href="https://www.anthropic.com/news/contextual-retrieval">Anthropic — "Introducing Contextual Retrieval" (09/2024)</a>. Ngưỡng 200k và con số "costs by up to 90%" là của năm 2024, khi window còn 200k. Với window 1M hôm nay, ngưỡng này nên đọc là "ngưỡng an toàn trước khi context rot đáng lo", không phải giới hạn kỹ thuật.</aside>
+
+<table>
+  <tr><th>Cách</th><th class="num">Mỗi câu hỏi</th><th class="num">Mỗi ngày</th><th>Thêm tầng hỏng?</th></tr>
+  <tr><td>Nhét KB, không cache</td><td class="num">$0.16</td><td class="num">~$320</td><td>Không</td></tr>
+  <tr><td>Nhét KB + cache (luôn ấm)</td><td class="num">$0.016</td><td class="num">~$32</td><td>Không</td></tr>
+  <tr><td>RAG top-20 chunk × 800 token</td><td class="num">~$0.032</td><td class="num">~$64 + hạ tầng</td><td>Có: retrieval, cần eval recall@K</td></tr>
+</table>
+
+<p>Nhét cả KB vào prompt và bật cache rẻ hơn cả RAG, lại bớt đi một tầng có thể hỏng. RAG chỉ bắt đầu thắng khi: KB đổi liên tục (cache liên tục bị write lại); mỗi user được xem một phần khác nhau (phân quyền); KB lớn tới mức context rot đo được trong eval; hoặc cần trích dẫn chính xác tới từng đoạn nguồn.</p>
+
+<h2>4. Agent chạy dài: bốn cách giữ context sạch</h2>
+
+<p>Agent gọi tool 40 vòng thì tool result chồng chất lại, context rot và cost cùng tăng. Anthropic đưa ra bốn kỹ thuật. Cột cuối là thứ blog không nói rõ nhưng anh phải tính:</p>
+
+<table>
+  <tr><th>Kỹ thuật</th><th>Là gì</th><th>Giá phải trả về cache</th></tr>
+  <tr><td><strong>Just-in-time</strong></td><td>Giữ "lightweight identifiers" (path, ID, URL), chỉ nạp nội dung khi cần qua tool</td><td>Không mất, vì prefix vẫn ổn định. Nhưng tốn thêm vòng gọi, tức thêm latency</td></tr>
+  <tr><td><strong>Tool result clearing</strong></td><td>Xoá tool result cũ khỏi lịch sử. "Safest lightest touch" theo Anthropic; có sẵn trong API dưới dạng <a href="https://platform.claude.com/docs/en/build-with-claude/context-editing">context editing</a></td><td>Mất cache từ điểm xoá trở về sau</td></tr>
+  <tr><td><strong>Compaction</strong></td><td>Gần chạm trần thì tóm tắt hội thoại, mở context mới bằng bản tóm tắt</td><td>Mất cache phần messages; rủi ro tóm tắt làm rơi mất chi tiết</td></tr>
+  <tr><td><strong>Note-taking / sub-agent</strong></td><td>Ghi note ra ngoài context; hoặc giao việc cho sub-agent có context sạch, nhận về bản tóm tắt 1.000–2.000 token</td><td>Context chính giữ nguyên, nhưng tổng token (và cost) tăng vì mỗi sub-agent có context riêng</td></tr>
+</table>
+
+<p>Không có lựa chọn miễn phí. Clearing hay compaction đổi cache hit lấy context sạch. Sub-agent đổi tổng token lấy context sạch. Anh chọn cách nào tuỳ theo con số trong eval (bài 6), không tuỳ theo cái nào nghe hay hơn.</p>
+
+<h2>5. Bài tập — đọc và phán đoán</h2>
+
+<details>
+  <summary>A. Dashboard báo <code>cache_read_input_tokens</code> luôn bằng 0 ở chatbot nội bộ, dù system prompt dài 6.000 token và traffic dày. Anh kiểm tra gì, theo thứ tự nào?</summary>
+  <p><strong>1. Có thứ gì động trong prefix không?</strong> Grep phần build system prompt tìm <code>now()</code>, request ID, tên user. Thủ phạm hay gặp nhất là timestamp.</p>
+  <p><strong>2. Tool definitions có ổn định giữa các request và các pod không?</strong> Log hash của JSON <code>tools</code> ở vài pod. Nếu hash khác nhau thì thứ tự serialize không cố định.</p>
+  <p><strong>3. Breakpoint có thật sự được đặt không, và prefix có vượt ngưỡng tối thiểu của model không?</strong> Với Haiku 4.5 ngưỡng là 4.096 token. 6.000 token vượt ngưỡng, nhưng nếu breakpoint lại đặt sau một block ngắn hơn ngưỡng thì cache không được tạo.</p>
+  <p><strong>4. Các pod có gọi qua cùng workspace không?</strong> Cache cô lập theo workspace. Cache cô lập theo workspace, nên nếu các service gọi qua hai workspace khác nhau thì chúng không dùng chung cache với nhau.</p>
+</details>
+
+<details>
+  <summary>B. Team đề xuất: "KB 150k token, đổi từ Opus 5.5 sang Sonnet 5 cho rẻ, giữ nguyên kiến trúc nhét KB vào prompt." Anh phản biện thế nào?</summary>
+  <p><strong>Phần KB gần như không rẻ hơn.</strong> Cache read của hai model bằng nhau ($0.20/MTok), nên tiết kiệm chỉ nằm ở output ($20 → $10 mỗi MTok) và phần input không cache (câu hỏi của user, lịch sử hội thoại). Hãy tính trên log thật: output chiếm bao nhiêu phần trăm hoá đơn?</p>
+  <p><strong>Chất lượng đổi thì đo bằng gì?</strong> Chạy eval set hiện có trên cả hai model (bài 6). Không có eval thì đây là vibe check.</p>
+  <p><strong>150k có đáng lo về context rot không?</strong> Nếu eval cho thấy câu trả lời kém đi ở các câu hỏi phải tìm chi tiết nằm sâu trong KB, thì đó mới là tín hiệu để cân nhắc RAG, chứ không phải giá.</p>
+</details>
+
+<h2>6. Kiểm tra lại</h2>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Cache của Claude so prefix theo thứ tự nào?</p>
+  <ul class="quiz-options">
+    <li data-correct>tools, system, rồi messages</li>
+    <li>system, tools, rồi messages</li>
+    <li>messages, system, rồi tools</li>
+    <li>system, messages, rồi tools</li>
+  </ul>
+  <p class="quiz-explain">"<code>tools</code>, <code>system</code>, and <code>messages</code> (in that order)". Vì tools đứng đầu, đổi tool definitions làm mất cache ở cả ba tầng.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Service nhét timestamp hiện tại vào đầu system prompt. Hệ quả với cache?</p>
+  <ul class="quiz-options">
+    <li data-correct>Không bao giờ có hit</li>
+    <li>Hit bình thường mỗi lần</li>
+    <li>Chỉ mất cache messages thôi</li>
+    <li>Chỉ tốn thêm vài token</li>
+  </ul>
+  <p class="quiz-explain">Prefix phải khớp từng byte. Timestamp đổi ở mỗi request, nằm trong system nên mọi thứ từ đó trở về sau đều là miss, và nếu breakpoint đặt sau timestamp thì anh còn trả thêm tiền write 1.25× cho mỗi request. Đưa thời gian xuống message user cuối cùng.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">KB 80.000 token, 2.000 câu hỏi rải đều mỗi ngày. Cách nào rẻ và ít tầng hỏng nhất?</p>
+  <ul class="quiz-options">
+    <li data-correct>Cả KB vào prompt, cache</li>
+    <li>Chunk, embed, dựng vector DB</li>
+    <li>Fine-tune model nhớ cả KB</li>
+    <li>Gửi KB, không bật cache</li>
+  </ul>
+  <p class="quiz-explain">Dưới ngưỡng ~200k, Anthropic khuyên nhét cả KB vào prompt. Với traffic rải đều thì cache luôn ấm: khoảng $0.016 mỗi câu cho phần KB trên Sonnet 5, rẻ hơn RAG top-20 và không có tầng retrieval nào để hỏng.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Agent chạy 40 vòng, tool result cũ chiếm 70% context. Kỹ thuật nhẹ tay nhất?</p>
+  <ul class="quiz-options">
+    <li data-correct>Xoá tool result cũ</li>
+    <li>Nâng lên model 1M</li>
+    <li>Viết lại system prompt</li>
+    <li>Tăng max_tokens output lên</li>
+  </ul>
+  <p class="quiz-explain">Anthropic gọi tool result clearing là "safest lightest touch". Giá phải trả là mất cache từ điểm xoá trở về sau. Nâng window chỉ đẩy context rot đi xa hơn một chút, không giải quyết được nó.</p>
+</div>
+
+<hr>
+
+<h2>Đọc thêm — primary source cho bài này</h2>
+<p><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic Engineering — "Effective context engineering for AI agents"</a> (~20 phút). Đọc nguyên văn các mục <em>system prompt ở "right altitude"</em> và <em>long-horizon tasks</em>. Sau đó lướt bảng invalidation và mục pricing trong <a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">doc Prompt caching</a> (~10 phút). Đó là trang anh sẽ phải mở lại mỗi khi có model mới ra.</p>
+
+<div class="callout">
+  <span class="label">Hỏi tôi</span>
+  <p>Báo cho tôi <strong>hai con số</strong>: ôn giãn cách mục 0 được mấy/3, và quiz cuối mấy/4, kèm câu nào sai. Nếu muốn, dán một đoạn code build prompt thật của team (bỏ dữ liệu nhạy cảm), tôi soi xem cache đang chết ở đâu theo bảng ở mục 2. Và thử giải thích bằng lời của anh: vì sao đổi Opus 5.5 sang Sonnet 5 có thể gần như không tiết kiệm được gì. Câu đó tôi sẽ phản biện.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0006-eval.html">← Bài 6</a>
+  <a href="../reference/context-and-caching.html">Cheat sheet: Context &amp; caching</a>
+  <a href="0008-self-host-inference-gpu-kv-cache-batching.html">Bài 8 →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 2 — Giải phẫu system prompt của coding agent</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0002 · Module 1 (CS146S W1) · 2026-09-27 · ~35 phút · <a href="0001-ben-trong-coding-agent.html">Bài 1</a> · <a href="../reference/system-prompt-patterns.html">Cheat sheet</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Giải phẫu system prompt của coding agent</h1>
+<p class="subtitle">Bài 1 mở phần "tay chân" của agent: vòng lặp và bộ tool. Nhưng còn một câu hỏi bỏ ngỏ: <em>làm sao model biết khi nào nên dùng tool nào, khi nào nên dừng, việc gì không được làm?</em> Câu trả lời nằm trong system prompt. Hôm nay ta đọc một system prompt production thật, từng đoạn một.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Nhìn vào một dòng trong system prompt hay CLAUDE.md và nói được nó đang chặn lỗi gì. Biết luật nào nên viết vào CLAUDE.md, luật nào phải chuyển thành hook. Và tìm ra chỗ mâu thuẫn trong chính các file instruction trên máy anh.</p>
+</div>
+
+<h2>0. Khởi động — hỏi lại hai câu bài trước</h2>
+<p>Ở bài 1, anh sai hai câu, và cả hai cùng xoay quanh một chuyện: <strong>lỗi đi đâu trong harness</strong>. Sai ở chỗ này là bình thường, vì đây là phần tinh tế nhất của bài. Hôm nay ta hỏi lại, nhưng đứng ở vị trí khác: lần này <em>anh</em> là người viết tool.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Ôn giãn cách cho <a href="../learning-records/0001-bai-1-lo-xu-ly-loi-trong-harness.md">LR-0001</a>. Đổi góc nhìn (từ người dùng agent sang người viết harness) để não phải nhớ lại ý, chứ không nhớ mặt chữ của đáp án cũ.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Anh đang viết tool <code>edit_file</code> cho một agent nội bộ. Model gửi <code>old_string</code> khớp tới 4 chỗ trong file. Tool nên làm gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Trả lỗi kèm số chỗ khớp và cách sửa</li>
+    <li>Tự sửa chỗ đầu tiên rồi báo thành công</li>
+    <li>Tự sửa cả bốn chỗ để tránh bỏ sót</li>
+    <li>Trả về chuỗi Error ngắn gọn không chi tiết</li>
+  </ul>
+  <p class="quiz-explain">Tool không được đoán hộ model: đoán sai là sửa nhầm code mà không ai biết. Nhưng chỉ trả mỗi chữ "Error" cũng không đủ, vì model không biết mình sai ở đâu và thường lặp lại y hệt. Thông báo tốt cho biết <em>sai gì</em> (4 chỗ khớp) và <em>sửa thế nào</em> (thêm dòng xung quanh). Nhờ vậy lượt sau model kéo dài <code>old_string</code>, giống như thêm điều kiện vào <code>WHERE</code> cho tới khi trúng đúng một row.</p>
+</div>
+
+<details>
+  <summary>Tự diễn đạt: vì sao <code>except: continue</code> trong code parse tool call còn tệ hơn để chương trình crash? Viết ra 2 câu, rồi mới mở.</summary>
+  <p>Crash thì ồn ào: ai cũng thấy, và ai cũng biết phải sửa. Nuốt lỗi thì im lặng: harness tưởng model không gọi tool nữa, nên coi response là câu trả lời cuối. File không được sửa, còn người dùng thấy dòng "tool: ..." và tưởng việc đã xong. Cách đúng là thứ ba: <strong>trả lỗi parse về cho model</strong> dưới dạng một tool_result báo lỗi, để lượt sau nó viết lại cho đúng format.</p>
+  <p>So với câu của anh: có đủ hai ý (1) "im lặng → tưởng đã xong" và (2) "cách đúng là trả lỗi về cho model" không? Thiếu ý nào thì báo tôi.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. System prompt nằm ở đâu trong một request?</h2>
+
+<p>Trước hết, nhắc lại một điều từ bài 1 của llm-foundation: model không nhớ gì giữa các lần gọi. Mỗi lượt, harness gửi lại <em>toàn bộ</em> mọi thứ model cần biết. Vậy "mọi thứ" đó gồm những gì?</p>
+
+<p>Hãy nghĩ tới ngày đầu đi làm của một kỹ sư mới. Họ nhận ba thứ: <strong>sổ tay công ty</strong> (quy định chung, áp dụng cho mọi dự án), <strong>README của team</strong> (cách build, quy ước code của dự án này), và <strong>ticket</strong> (việc cụ thể hôm nay). Một request của coding agent cũng có đúng ba lớp đó, cộng thêm danh sách công cụ:</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 720 300" role="img" aria-label="Cấu trúc một request của coding agent: tool definitions, system prompt, CLAUDE.md, rồi hội thoại; ba lớp trên ít đổi nên dùng chung prefix cache">
+  <rect class="d-box d-fill" x="120" y="10" width="420" height="50"/>
+  <text x="330" y="32" class="d-center d-strong">Tool definitions</text>
+  <text x="330" y="50" class="d-center d-small">tên, mô tả, schema từng tool</text>
+  <rect class="d-box d-fill" x="120" y="70" width="420" height="60"/>
+  <text x="330" y="94" class="d-center d-strong">System prompt</text>
+  <text x="330" y="112" class="d-center d-small">vai trò, cách dùng tool, luật an toàn, môi trường</text>
+  <rect class="d-box d-accent-fill" x="120" y="140" width="420" height="60"/>
+  <text x="330" y="164" class="d-center d-strong">CLAUDE.md / AGENTS.md</text>
+  <text x="330" y="182" class="d-center d-small">gửi dưới dạng user message, sau system prompt</text>
+  <rect class="d-box" x="120" y="210" width="420" height="80"/>
+  <text x="330" y="240" class="d-center d-strong">Hội thoại</text>
+  <text x="330" y="258" class="d-center d-small">yêu cầu, tool_use, tool_result…</text>
+  <text x="330" y="276" class="d-center d-small">dài thêm sau mỗi lượt</text>
+  <text x="110" y="40" class="d-end d-small">harness viết</text>
+  <text x="110" y="104" class="d-end d-small">harness viết</text>
+  <text x="110" y="174" class="d-end d-small d-accent">team anh viết</text>
+  <text x="110" y="254" class="d-end d-small">mỗi lượt</text>
+  <path class="d-line" d="M556,12 H566 V198 H556"/>
+  <text x="576" y="100" class="d-small">ít đổi →</text>
+  <text x="576" y="116" class="d-small">dùng chung</text>
+  <text x="576" y="132" class="d-small">prefix cache</text>
+</svg>
+<figcaption>Hình 1. Bốn lớp của một request, đọc từ trên xuống theo đúng thứ tự model nhận. Hãy để ý lớp màu cam: đó là lớp duy nhất team anh viết, và nó nằm <em>ngoài</em> system prompt. Ba lớp trên ít thay đổi, nên được cache như bài 7 llm-foundation.</figcaption>
+</figure>
+
+<p>Chi tiết ở lớp màu cam rất quan trọng. Tài liệu Claude Code nói rõ: <em>"CLAUDE.md content is delivered as a user message after the system prompt, not as part of the system prompt itself"</em> (tạm dịch: "nội dung CLAUDE.md được gửi dưới dạng một user message nằm sau system prompt, chứ không phải một phần của system prompt"). Codex CLI cũng để AGENTS.md ngoài phần prompt cố định: nội dung file được gửi <em>"with the developer message"</em> (tạm dịch: "kèm theo developer message"), tức một message riêng của phía harness.<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://code.claude.com/docs/en/memory">Claude Code — How Claude remembers your project</a>; <a href="https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts">Agent SDK — Modifying system prompts</a>.</aside>
+
+<p>Phép so sánh "sổ tay nhân viên" hỏng ở một chỗ. Người mới đọc sổ tay một lần rồi nhớ. Model thì đọc lại toàn bộ ở <em>mỗi</em> lượt, và mỗi dòng đều tốn token, đều chiếm chỗ trong context. Vì vậy mỗi dòng phải đáng tiền.</p>
+
+<p><strong>Điều cần nhớ:</strong> system prompt do harness viết; CLAUDE.md do anh viết và đi vào như một user message. Cả hai đều là <em>lời dặn</em>, không phải cấu hình bắt buộc. Mục 4 sẽ cho thấy điều này quan trọng thế nào.</p>
+
+<h2>2. Đọc system prompt của Codex CLI</h2>
+
+<p>Claude Code không công bố system prompt của nó. Các system prompt mà Anthropic công bố chỉ là của app claude.ai. Nhưng Codex CLI của OpenAI là mã nguồn mở, nên ta đọc được nguyên văn: file <code>prompt.md</code> dài 275 dòng.<span class="sidenote-ref"></span> Tên sản phẩm khác nhau, nhưng các coding agent giải cùng một bài toán, nên cấu trúc prompt rất giống nhau.</p>
+<aside class="sidenote"><a href="https://github.com/openai/codex/blob/main/codex-rs/models-manager/prompt.md">openai/codex — prompt.md</a> (bản sửa gần nhất 2026-06-23). Phần git safety lấy từ <a href="https://github.com/openai/codex/blob/main/codex-rs/core/gpt_5_codex_prompt.md">gpt_5_codex_prompt.md</a> cùng repo.</aside>
+
+<p>Trước khi đọc tiếp, thử đoán: nếu anh phải viết system prompt cho một coding agent, anh sẽ viết những mục gì?</p>
+
+<p>Giờ so với bản thật. Có một cách đọc giúp mọi thứ sáng ra: <strong>hầu hết các dòng trong prompt là một vết sẹo</strong>. Mỗi dòng tồn tại vì model từng làm sai đúng việc đó. Giống như runbook của team anh: dòng "nhớ drain node trước khi reboot" có mặt vì đã có một lần quên. Vì vậy, với mỗi đoạn dưới đây, hãy hỏi: <em>dòng này đang chặn lỗi gì?</em></p>
+
+<table>
+  <tr><th>Mục</th><th>Trích nguyên văn (và tạm dịch)</th><th>Chặn lỗi gì</th></tr>
+  <tr><td><strong>Vai trò &amp; năng lực</strong></td><td><em>"You are a coding agent running in the Codex CLI"</em>, kèm danh sách những gì nó làm được.<br>(Tạm dịch: "Bạn là một coding agent chạy trong Codex CLI.")</td><td>Model không biết mình có tool gì, hứa làm việc mình không làm được</td></tr>
+  <tr><td><strong>Làm tới cùng</strong></td><td><em>"keep going until the query is completely resolved… Do NOT guess or make up an answer."</em><br>(Tạm dịch: "tiếp tục cho tới khi yêu cầu được giải quyết trọn vẹn… KHÔNG đoán hay bịa câu trả lời.")</td><td>Dừng giữa chừng để hỏi thừa; bịa kết quả thay vì kiểm tra</td></tr>
+  <tr><td><strong>Giữ đúng phạm vi</strong></td><td><em>"Do not attempt to fix unrelated bugs or broken tests."</em> · <em>"surgical precision"</em><br>(Tạm dịch: "Đừng sửa bug hay test hỏng không liên quan." · "chính xác như phẫu thuật")</td><td>Sửa lan man, diff phình to, review không nổi</td></tr>
+  <tr><td><strong>Cách dùng tool</strong></td><td><em>"prefer using <code>rg</code>"</em> · <em>"Do not waste tokens by re-reading files after calling <code>apply_patch</code>… The tool call will fail if it didn't work."</em><br>(Tạm dịch: "ưu tiên dùng rg" · "Đừng tốn token đọc lại file sau khi apply_patch… nếu sửa không được, tool sẽ báo lỗi.")</td><td>Tìm kiếm chậm; đốt token đọc lại file vô ích</td></tr>
+  <tr><td><strong>Kiểm tra</strong></td><td><em>"start as specific as possible to the code you changed… then make your way to broader tests"</em> · <em>"do not add tests to codebases with no tests"</em> · format tối đa 3 lần.<br>(Tạm dịch: "bắt đầu từ test sát nhất với code vừa sửa… rồi mới mở rộng" · "đừng thêm test vào codebase chưa có test")</td><td>Chạy cả test suite mất 20 phút; lặp format vô hạn</td></tr>
+  <tr><td><strong>An toàn git</strong></td><td><em>"NEVER revert existing changes you did not make"</em> · <em>"STOP IMMEDIATELY and ask"</em> · cấm <code>git reset --hard</code>.<br>(Tạm dịch: "KHÔNG BAO GIỜ revert thay đổi không phải do mình làm" · "DỪNG NGAY và hỏi người dùng")</td><td>Xóa mất code anh đang viết dở</td></tr>
+  <tr><td><strong>Luật AGENTS.md</strong></td><td><em>"More-deeply-nested AGENTS.md files take precedence"</em> · <em>"Direct system/developer/user instructions… take precedence over AGENTS.md"</em><br>(Tạm dịch: "AGENTS.md nằm sâu hơn thì được ưu tiên" · "lời dặn trực tiếp được ưu tiên hơn AGENTS.md")</td><td>Không biết theo ai khi hai file mâu thuẫn</td></tr>
+  <tr><td><strong>Lập kế hoạch</strong></td><td>Tool <code>update_plan</code>, <em>"exactly one <code>in_progress</code> step"</em>; <em>"Do not use plans for simple or single-step queries"</em><br>(Tạm dịch: "luôn có đúng một bước đang làm" · "đừng lập kế hoạch cho việc đơn giản một bước")</td><td>Lạc hướng trong việc dài; hoặc ngược lại, lập kế hoạch rườm rà cho việc nhỏ</td></tr>
+</table>
+
+<p>Hãy dừng lại ở dòng "Cách dùng tool". Prompt bảo model <em>đừng đọc lại file sau khi sửa, vì tool sẽ báo lỗi nếu sửa không được</em>. Dòng này chỉ an toàn khi harness thật sự báo lỗi. Đặt nó vào agent 192 dòng ở bài 1, nơi lỗi bị nuốt im lặng, thì model sẽ tự tin bước tiếp trên một file chưa hề được sửa. Nói cách khác: <strong>prompt và harness phải khớp nhau</strong>. Một lời dặn trong prompt luôn dựa trên một giả định về cách harness hành xử.</p>
+
+<p>Phần còn lại của prompt (khoảng một nửa) nói về cách giao tiếp: gửi một câu ngắn trước mỗi nhóm tool call, báo tiến độ, format câu trả lời cuối. Nó không làm agent code giỏi hơn, nhưng giúp người dùng theo kịp và tin tưởng agent.</p>
+
+<p><strong>Điều cần nhớ:</strong> đọc system prompt như đọc runbook. Mỗi dòng là một lỗi đã từng xảy ra. Khi anh viết CLAUDE.md, hãy viết theo cùng cách: bắt đầu từ lỗi thật, rồi mới viết luật.</p>
+
+<h2>3. ReAct: vì sao agent xen kẽ "nghĩ" và "làm"</h2>
+
+<p>Nhìn lại vòng lặp ở bài 1: model nghĩ một chút, gọi tool, đọc kết quả, nghĩ tiếp. Mẫu này có tên: <strong>ReAct</strong> (<em>Reasoning + Acting</em>, tức "suy luận + hành động"), đề xuất năm 2022.<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://arxiv.org/abs/2210.03629">Yao et al. — "ReAct: Synergizing Reasoning and Acting in Language Models"</a>, ICLR 2023. roadmap.sh xếp ReAct và planner–executor vào nhóm kiến trúc agent.</aside>
+
+<p>Trước ReAct, có hai cách tách rời. Một là cho model <em>nghĩ</em> từng bước (chain-of-thought) nhưng không được kiểm tra gì với thế giới bên ngoài. Hai là cho model <em>làm</em> nhưng không nghĩ. ReAct ghép hai thứ lại, và mỗi bên bù cho bên kia. Bài báo viết: suy luận giúp model <em>"induce, track, and update action plans"</em> (tạm dịch: "đề ra, theo dõi và cập nhật kế hoạch hành động"), còn hành động giúp nó <em>"gather additional information"</em> (tạm dịch: "thu thập thêm thông tin") từ bên ngoài.</p>
+
+<p>Điểm đáng giá nhất với anh: ReAct <em>"overcomes issues of hallucination and error propagation prevalent in chain-of-thought reasoning"</em> (tạm dịch: "khắc phục vấn đề hallucination và lỗi dây chuyền vốn phổ biến khi chỉ suy luận chuỗi"). Nói đơn giản: nếu chỉ nghĩ, một giả định sai ở bước 2 sẽ kéo sai hết các bước sau. Có hành động xen vào, model được "va chạm với thực tế": nó nghĩ file có hàm <code>findById</code>, chạy <code>rg</code> thì thấy không có, và sửa lại suy nghĩ ngay. Đây cũng là lý do bash quý như bài 1 đã nói.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+  P["Kế hoạch<br/>(update_plan / todo)"] --> T["Nghĩ<br/>bước tiếp theo là gì?"]
+  T --> A["Làm<br/>gọi tool"]
+  A --> O["Quan sát<br/>đọc tool_result"]
+  O --> T
+  O -. "kế hoạch sai thì sửa" .-> P
+  T --> D["Xong<br/>trả lời người dùng"]
+</pre>
+<figcaption>Hình 2. Vòng ReAct (nghĩ → làm → quan sát) cộng thêm một kế hoạch nhẹ ở ngoài. Hãy nhìn mũi tên nét đứt: kế hoạch không cố định. Quan sát thật có thể buộc model sửa kế hoạch, đúng như prompt Codex yêu cầu gửi kèm lý do khi đổi plan.</figcaption>
+</figure>
+
+<p>Vậy kế hoạch (plan tool) từ đâu ra? roadmap.sh gọi mẫu này là <strong>planner–executor</strong>: một bên lập kế hoạch, một bên thực hiện. Coding agent hiện nay dùng phiên bản nhẹ: cùng một model vừa lập kế hoạch, vừa thực hiện, và cập nhật kế hoạch trong lúc làm. Ba lựa chọn này có trade-off rõ:</p>
+
+<table>
+  <tr><th>Cách làm</th><th>Hợp với</th><th>Rủi ro</th></tr>
+  <tr><td>ReAct thuần, không plan</td><td>Việc nhỏ, một hai bước</td><td>Việc dài dễ lạc hướng, quên việc đã hứa</td></tr>
+  <tr><td>ReAct + plan tool (Codex, Claude Code)</td><td>Việc nhiều bước trong một phiên</td><td>Plan rườm rà cho việc đơn giản, nên prompt phải dặn khi nào không dùng</td></tr>
+  <tr><td>Planner và executor tách riêng (thường là hai agent)</td><td>Việc lớn, cần người duyệt plan trước khi làm</td><td>Plan lập ra trước khi thấy code thật, dễ sai; tốn thêm lượt gọi</td></tr>
+</table>
+
+<p>Dòng thứ ba sẽ quay lại ở bài 3 (quy trình RePPIT: Research, Propose, Plan, Implement, Test) và bài 10 (subagent planner / implementer / reviewer).</p>
+
+<p><strong>Điều cần nhớ:</strong> coding agent là ReAct: nghĩ, làm, quan sát, lặp lại. Hành động giữ cho suy luận không trôi xa khỏi thực tế. Plan chỉ là lớp mỏng bên ngoài để không lạc trong việc dài.</p>
+
+<h2>4. Lời dặn không phải là luật</h2>
+
+<p>Nhiều người nghĩ viết <code>NEVER</code> bằng chữ hoa trong CLAUDE.md là đủ để cấm hẳn một việc. Tài liệu Claude Code nói ngược lại: <em>"Claude treats them as context, not enforced configuration. To block an action regardless of what Claude decides, use a PreToolUse hook instead."</em> (tạm dịch: "Claude coi các file này là context, không phải cấu hình bắt buộc. Muốn chặn một hành động bất kể Claude quyết định thế nào, hãy dùng PreToolUse hook.")</p>
+
+<p>Còn khi hai file dặn hai điều trái nhau? Codex giải quyết bằng một luật ưu tiên viết ngay trong system prompt: file nằm sâu hơn thắng. Claude Code thì khác. Mọi file CLAUDE.md được <em>nối</em> vào context, không file nào đè file nào, và <em>"if two rules contradict each other, Claude may pick one arbitrarily"</em> (tạm dịch: "nếu hai luật mâu thuẫn, Claude có thể chọn bừa một trong hai"). Tài liệu còn khuyên mỗi file CLAUDE.md nên dưới 200 dòng, vì file dài làm model tuân thủ kém đi.<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://code.claude.com/docs/en/memory">Claude Code — How Claude remembers your project</a>, các mục về size, consistency và troubleshooting.</aside>
+
+<p>Với dân backend, có thể hình dung thế này. CLAUDE.md giống <strong>comment trong code</strong>: người đọc nên theo, nhưng không có gì ép buộc. Hook giống <strong>constraint trong database</strong>: vi phạm là bị từ chối, bất kể ai viết câu lệnh. Việc gì mà làm sai sẽ gây hậu quả không đảo ngược được, thì đừng chỉ viết comment.</p>
+
+<p><strong>Điều cần nhớ:</strong> CLAUDE.md để <em>định hướng</em>, hook để <em>chặn</em>. Hai file mâu thuẫn thì Claude Code không có luật phân xử, nên việc giữ các file nhất quán là trách nhiệm của anh.</p>
+
+<h2>5. Thực hành: audit các file instruction trên máy anh (~15 phút)</h2>
+
+<p>Khi anh mở Claude Code trong <code>my-agent</code>, model nhận cùng lúc: <code>~/.claude/CLAUDE.md</code> (file global), <code>my-agent/CLAUDE.md</code> và các file nó import (<code>context/profile.md</code>, <code>context/conventions.md</code>, <code>memory/MEMORY.md</code>). Anh sẽ đọc chúng bằng con mắt của người viết system prompt.</p>
+
+<pre><code>cd ~/workspace/my-agent
+wc -l ~/.claude/CLAUDE.md CLAUDE.md context/*.md memory/MEMORY.md</code></pre>
+
+<ol>
+  <li><strong>Đối chiếu với 8 mục của Codex.</strong> Mục nào đã có trong các file của anh? Mục nào thiếu hẳn (ví dụ: an toàn git, cách kiểm tra)?</li>
+  <li><strong>Tìm ít nhất 2 chỗ mâu thuẫn</strong> giữa file global và file project. Với mỗi chỗ: nếu theo luật của Codex thì bên nào thắng? Với Claude Code thì chuyện gì xảy ra?</li>
+  <li><strong>Tìm một luật đang viết như lời dặn nhưng đáng ra phải là hook.</strong> Gợi ý: luật nào mà nếu model lỡ vi phạm thì hậu quả khó đảo ngược?</li>
+  <li><strong>Viết thêm một luật theo kiểu "vết sẹo":</strong> một lỗi thật mà agent từng gây ra cho anh, rồi mới đến luật chặn nó. Chưa cần sửa file, chỉ cần viết ra.</li>
+</ol>
+
+<details>
+  <summary>Gợi ý (mở sau khi đã tự làm)</summary>
+  <p><strong>Câu 1.</strong> Cách kiểm tra có trong <code>context/conventions.md</code> ("Code thay đổi phải được test/verify trước khi báo hoàn thành"). An toàn git có một phần ("Không commit/push khi tôi chưa yêu cầu"), nhưng thiếu luật kiểu "không revert thay đổi mình không làm".</p>
+  <p><strong>Câu 2.</strong> Một chỗ mâu thuẫn rõ: file global bảo <em>"route implementation to <code>executor</code>"</em> (tạm dịch: "giao việc implement cho <code>executor</code>"), còn bảng trong <code>my-agent/CLAUDE.md</code> bảo viết code thì giao cho <code>senior-software-engineer</code>. Theo luật Codex, file project nằm sâu hơn nên thắng. Với Claude Code, model có thể chọn bừa. Chỗ thứ hai nằm ở ngưỡng "việc nhỏ làm trực tiếp": hai file mô tả ngưỡng này theo hai cách khác nhau. Ngoài ra, file global dài khoảng 288 dòng, vượt mức khuyến nghị 200 dòng.</p>
+  <p><strong>Câu 3.</strong> "Không commit/push khi tôi chưa yêu cầu" là ứng viên tốt: push nhầm lên remote thì khó rút lại. Bài 9 (hooks) sẽ biến nó thành một hook thật.</p>
+  <p><strong>Câu 4.</strong> Không có đáp án chuẩn. Luật tốt thì cụ thể và kiểm tra được: "chạy <code>./mvnw -q test -pl &lt;module&gt;</code> trước khi báo xong" tốt hơn "nhớ test cẩn thận".</p>
+</details>
+
+<h2>6. Kiểm tra cuối bài</h2>
+<p>Bốn câu. Câu thứ ba nối bài này với phần anh sai ở bài 1, nên hãy đọc kỹ.</p>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">File global bảo giao code cho <code>executor</code>, CLAUDE.md của project bảo giao cho <code>senior-software-engineer</code>. Theo tài liệu Claude Code, chuyện gì xảy ra?</p>
+  <ul class="quiz-options">
+    <li data-correct>Model có thể theo bất kỳ bên nào</li>
+    <li>File project luôn thắng vì được đọc sau</li>
+    <li>File global luôn thắng vì phạm vi rộng</li>
+    <li>Claude Code báo lỗi xung đột lúc mở</li>
+  </ul>
+  <p class="quiz-explain">Claude Code nối mọi file CLAUDE.md vào context, không file nào đè file nào, và nói rõ khi hai luật mâu thuẫn thì Claude "may pick one arbitrarily" (có thể chọn bừa một bên). File project đúng là được đọc sau, nhưng tài liệu không hứa nó thắng. Codex thì khác: luật ưu tiên được viết ngay trong system prompt.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Anh muốn chắc chắn agent <strong>không bao giờ</strong> chạy <code>git push --force</code>. Đặt luật ở đâu?</p>
+  <ul class="quiz-options">
+    <li data-correct>PreToolUse hook chặn lệnh trước khi chạy</li>
+    <li>Một dòng NEVER viết hoa trong CLAUDE.md</li>
+    <li>Nhắc lại luật ở mọi user message</li>
+    <li>Thêm ví dụ sai vào system prompt</li>
+  </ul>
+  <p class="quiz-explain">Mọi lựa chọn còn lại đều là lời dặn: model đọc và <em>thường</em> làm theo, nhưng không có gì bảo đảm. Hook chạy trong harness, trước khi lệnh được thực thi, nên chặn được bất kể model quyết định gì. Giống constraint trong database so với comment trong code.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Prompt Codex dặn: đừng đọc lại file sau khi <code>apply_patch</code>, vì nếu sửa không được thì tool sẽ báo lỗi. Lời dặn này chỉ an toàn khi nào?</p>
+  <ul class="quiz-options">
+    <li data-correct>Tool luôn báo lỗi khi sửa thất bại</li>
+    <li>Model đủ thông minh để tự nhớ file</li>
+    <li>File sửa nhỏ hơn giới hạn context window</li>
+    <li>Người dùng tự review diff sau mỗi lượt</li>
+  </ul>
+  <p class="quiz-explain">Lời dặn trong prompt dựa trên một giả định về harness: sửa hỏng thì chắc chắn có lỗi trả về. Nếu harness nuốt lỗi như agent 192 dòng, model sẽ tự tin bước tiếp trên một file chưa hề được sửa. Prompt và harness phải khớp nhau, và lỗi phải luôn đi ngược về model.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Vì sao xen kẽ hành động với suy luận (ReAct) giảm hallucination so với chỉ suy luận từng bước?</p>
+  <ul class="quiz-options">
+    <li data-correct>Quan sát thật sửa lại suy luận sai</li>
+    <li>Model được suy nghĩ lâu hơn mỗi bước</li>
+    <li>Prompt ngắn hơn nên ít bị nhiễu hơn</li>
+    <li>Tool tự sửa câu trả lời của model</li>
+  </ul>
+  <p class="quiz-explain">Chỉ suy luận thì một giả định sai ở bước đầu kéo sai tất cả các bước sau (lỗi dây chuyền). Mỗi lần gọi tool, model nhận về một quan sát thật từ bên ngoài, ví dụ <code>rg</code> báo hàm không tồn tại, và nó sửa lại suy nghĩ trước khi đi tiếp. Tool không sửa gì hộ model; nó chỉ cung cấp sự thật.</p>
+</div>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>Tóm lại</h2>
+<ul>
+  <li><strong>Một request có bốn lớp:</strong> tool definitions, system prompt (harness viết), CLAUDE.md (anh viết, gửi dưới dạng user message), hội thoại.</li>
+  <li><strong>Đọc prompt như đọc runbook:</strong> mỗi dòng chặn một lỗi đã từng xảy ra. Prompt và harness phải khớp nhau.</li>
+  <li><strong>Coding agent là ReAct</strong> (nghĩ, làm, quan sát), cộng một plan mỏng cho việc dài.</li>
+  <li><strong>Lời dặn không phải luật:</strong> muốn chặn chắc chắn thì dùng hook; các file CLAUDE.md mâu thuẫn thì model có thể chọn bừa.</li>
+</ul>
+<p>Bài 3 sang Module 2: prompting nâng cao và quy trình RePPIT, tức cách <em>anh</em> dẫn dắt agent qua một việc lớn.</p>
+
+<h2>Đọc thêm</h2>
+<p><strong>Nguồn chính:</strong> <a href="https://github.com/openai/codex/blob/main/codex-rs/models-manager/prompt.md">system prompt của Codex CLI</a>. Đọc lướt cả 275 dòng, và với mỗi đoạn tự hỏi "đoạn này chặn lỗi gì". Sau đó đọc mục "Write effective instructions" và "Troubleshoot" trong <a href="https://code.claude.com/docs/en/memory">Claude Code — How Claude remembers your project</a>. Muốn hiểu gốc của vòng lặp: đọc phần abstract và hình 1 của <a href="https://arxiv.org/abs/2210.03629">bài báo ReAct</a>.</p>
+
+<div class="callout">
+  <span class="label">Báo lại cho tôi</span>
+  <p>(1) Điểm khởi động <strong>x/1</strong> kèm nguyên văn 2 câu tự diễn đạt của anh. (2) Điểm cuối bài <strong>y/4</strong>, kèm câu sai và <em>đáp án anh đã chọn</em>, để tôi biết anh đang hiểu nhầm theo hướng nào. (3) Kết quả 4 câu thực hành ở mục 5. (4) Output bài tập 4a/4b của bài 1 khi anh tiện. Chỗ nào chưa rõ, cứ hỏi: hỏi lại là một phần của việc học.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0001-ben-trong-coding-agent.html">← Bài 1: Bên trong coding agent</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0003-reppit-va-spec-driven.html">Bài 3: RePPIT &amp; spec-driven →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/diagram.js"></script>
+</body>
+</html>

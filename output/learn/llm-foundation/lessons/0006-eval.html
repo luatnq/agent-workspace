@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 6 — Eval: đo "có tốt hơn không" thay vì cảm tính</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">LLM Foundation · Bài 0006 · 2026-09-23 · ~25 phút · <a href="../reference/eval-playbook.html">Cheat sheet: Eval playbook</a> · <a href="0005-rag-vs-fine-tune.html">Bài 5</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Eval: đo "có tốt hơn không" thay vì cảm tính</h1>
+<p class="subtitle">Bốn bài liền kết thúc ở cùng một câu: <em>phải đo được</em>. Bài 2 nói hallucination không sửa được bằng prompt, chỉ giảm được — giảm bao nhiêu? Bài 4 nói evaluator-optimizer cần một cái gate — gate chấm bằng gì? Bài 5 nói đừng leo lên RAG hay fine-tune khi chưa có eval set. Bài này là cái còn thiếu.</p>
+
+<div class="callout">
+  <span class="label">Cái anh mang về sau bài này</span>
+  <p>Ba tầng eval và tầng nào làm trước, bảng chọn grader theo loại task, quy trình bắt buộc để tin một LLM-as-judge, cách tách eval cho RAG và agent, và lý do một eval thiết kế ẩu <em>nuôi</em> hallucination thay vì bắt được nó.</p>
+</div>
+
+<h2>0. Bốn câu ôn trộn — làm trước khi đọc</h2>
+
+<p>Ba bài gần nhất anh báo "xong" mà không có số. Bốn câu dưới đây lấy từ bài 2, 3, 4, 5 trộn thứ tự — retrieval từ trí nhớ, không mở lại bài. Trả lời xong, <strong>ghi lại con số</strong> rồi mới đọc tiếp; con số đó quyết định bài 7 dạy gì.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Ôn trộn (interleaving) + gọi lại từ trí nhớ (retrieval practice) là hai kỹ thuật tạo <em>desirable difficulty</em>: làm bài khó hơn lúc học để nhớ lâu hơn lúc cần. Đọc lại bài cũ cho cảm giác thuộc, nhưng không tạo được hiệu ứng này.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Vì sao thêm câu "đừng bịa" vào prompt không xoá được hallucination?</p>
+  <ul class="quiz-options">
+    <li data-correct>Nó sinh từ pretraining</li>
+    <li>Prompt bị cắt ngắn</li>
+    <li>Model bỏ qua prompt</li>
+    <li>Temperature chưa về 0</li>
+  </ul>
+  <p class="quiz-explain">Bài 2: hallucination sinh ra từ áp lực thống kê của pretraining (tối ưu cho "hợp lý", không phải "đúng") và dai dẳng vì cách chấm eval. Prompt là băng dán ở tầng trên, không chạm được nguyên nhân.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Trong tool-use loop, thành phần nào thực sự thực thi tool?</p>
+  <ul class="quiz-options">
+    <li data-correct>App do anh viết</li>
+    <li>Model bên Anthropic gọi</li>
+    <li>Runtime của Claude chạy</li>
+    <li>Tool tự kích hoạt</li>
+  </ul>
+  <p class="quiz-explain">Bài 3: model chỉ sinh ra <code>tool_use</code> — một yêu cầu. App thực thi, rồi trả <code>tool_result</code>. Quyền thực thi và mọi guard (số vòng, ngân sách, confirm) nằm ở app.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Trục phân biệt workflow và agent là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Ai cầm control flow</li>
+    <li>Số lượng tool dùng</li>
+    <li>Model lớn hay nhỏ</li>
+    <li>Có streaming hay không</li>
+  </ul>
+  <p class="quiz-explain">Bài 4: workflow là code cầm control flow (anh biết trước các bước); agent là model cầm control flow (số bước không đoán được). Số tool hay cỡ model không đổi được bản chất đó.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Knowledge base 80.000 token. Anthropic khuyên làm gì trước khi dựng RAG?</p>
+  <ul class="quiz-options">
+    <li data-correct>Nhét hết vào prompt</li>
+    <li>Chunk rồi index ngay</li>
+    <li>Fine-tune model nhỏ lại</li>
+    <li>Tăng context window lên</li>
+  </ul>
+  <p class="quiz-explain">Bài 5: dưới ngưỡng ~200.000 token (~500 trang) thì nhét cả vào prompt + prompt caching, khỏi RAG. 80k nằm dưới ngưỡng — dựng pipeline index lúc này là tự thêm một tầng hỏng mà chưa cần.</p>
+</div>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Eval là nút thắt, không phải việc làm thêm</h2>
+
+<p>Hamel Husain mô tả vòng lặp phát triển một LLM app gồm ba hoạt động: <strong>đánh giá chất lượng</strong> (tests), <strong>debug</strong> (logging &amp; inspection), và <strong>thay đổi hành vi</strong> (prompting, fine-tuning, code). Câu chốt:<span class="sidenote-ref"></span></p>
+
+<blockquote><p>"If you streamline your evaluation process, all other activities become easy."</p></blockquote>
+<aside class="sidenote"><a href="https://hamel.dev/blog/posts/evals/">Hamel Husain — "Your AI Product Needs Evals" (2024)</a>. Primary source của bài này. Tác giả xây eval system cho Rechat, một AI assistant bất động sản tên Lucy.</aside>
+
+<p>Với dân backend, phép so sánh gần nhất là test suite: tốn công lúc dựng, và sau đó mọi thay đổi đều nhanh hơn vì anh biết ngay mình có làm hỏng gì không. Sự khác biệt là ở LLM app, <em>không có eval thì không có cách nào khác</em> — output không deterministic, một thay đổi prompt nhỏ có thể cải thiện chỗ này và phá chỗ kia mà không ai thấy.</p>
+
+<p>Triệu chứng của một team chưa có eval, theo case study Lucy: <strong>whack-a-mole</strong> — sửa lỗi này thì lỗi khác bật lên; không thấy gì ngoài "vibe check"; và prompt phình ra vì mỗi edge case lại nhét thêm một câu dặn dò. Nếu team anh đang ở đó, vấn đề không phải là model chưa đủ tốt.</p>
+
+<div class="callout">
+  <span class="label">Câu đắt nhất trong bài của Hamel</span>
+  <p>"You are doing it wrong if you aren't looking at lots of data." Và: "You must remove all friction from the process of looking at data." Không phải mua tool, không phải chọn framework — là ngồi đọc trace thật.</p>
+</div>
+
+<h2>2. Ba tầng eval</h2>
+
+<p>Hamel chia eval thành ba tầng, làm theo thứ tự:</p>
+
+<table>
+  <tr><th>Tầng</th><th>Là gì</th><th>Chi phí mỗi lần chạy</th><th>Khi nào dựng</th></tr>
+  <tr>
+    <td><strong>L1 — Unit test</strong></td>
+    <td>Assertion như viết trong pytest, tổ chức theo feature × scenario. Rechat có hàng trăm cái, bổ sung liên tục mỗi khi gặp failure mode mới.</td>
+    <td>Gần như 0, chạy được trong CI</td>
+    <td>Ngay từ đầu</td>
+  </tr>
+  <tr>
+    <td><strong>L2 — Human &amp; model eval</strong></td>
+    <td>Log trace (toàn bộ chuỗi hội thoại + tool call), người ngồi review, rồi dùng LLM-as-judge để nhân rộng cái người đã chấm.</td>
+    <td>Thời gian người + tiền gọi judge</td>
+    <td>Khi L1 không bắt được lỗi nữa</td>
+  </tr>
+  <tr>
+    <td><strong>L3 — A/B test</strong></td>
+    <td>Người dùng thật, đo metric sản phẩm.</td>
+    <td>Cao nhất, tính bằng tuần</td>
+    <td>"It's okay to put this stage off until you are sufficiently ready"</td>
+  </tr>
+</table>
+
+<p><strong>L1 cụ thể trông như thế nào.</strong> Ví dụ thật trong bài Hamel: một assertion bằng regex kiểm tra output không lộ UUID ra cho người dùng ("Exposed UUIDs found"). Đây chính là loại lỗi mà LLM judge chấm kém còn regex chấm hoàn hảo — rẻ, chắc, không bao giờ sai. Nguyên tắc: <em>bất cứ thứ gì kiểm được bằng code thì đừng nhờ model kiểm.</em></p>
+
+<p><strong>Lấy đâu ra test case.</strong> Không ngồi nghĩ tay từng cái. Hamel dùng LLM sinh ra: một prompt yêu cầu tạo 50 biến thể câu hỏi tìm nhà, trả về JSON array, rồi chạy qua hệ thống. Ba scenario cho tính năng tìm listing: khớp một kết quả, khớp nhiều kết quả, không khớp kết quả nào. Đây là chỗ khác biệt lớn nhất giữa eval LLM và test thường — anh có thể dùng chính LLM để dựng bộ test.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Hamel: dùng LLM để tự tháo nút thắt của eval — sinh test case, viết assertion, gán nhãn dữ liệu. Bộ dữ liệu eval này về sau còn là 99% công việc của fine-tune ("99% of the labor involved with fine-tuning is assembling high-quality data") — tức là dựng eval trước cũng là dọn đường cho bước ở bài 5.</aside>
+
+<h2>3. Chọn grader: bảng quyết định</h2>
+
+<p>Anthropic đặt ba nguyên tắc thiết kế eval, và nguyên tắc thứ ba hay bị cãi:<span class="sidenote-ref"></span></p>
+<ol>
+  <li><strong>Task-specific</strong> — eval phải phản ánh đúng phân bố task thật, kể cả edge case. Benchmark công khai không nói được gì về app của anh.</li>
+  <li><strong>Automate when possible</strong> — đặt câu hỏi sao cho chấm tự động được.</li>
+  <li><strong>Volume over quality</strong> — "More questions with slightly lower signal automated grading is better than fewer questions with high-quality human hand-graded evals."</li>
+</ol>
+<aside class="sidenote"><a href="https://platform.claude.com/docs/en/test-and-evaluate/develop-tests">Anthropic — "Create strong empirical evaluations"</a>. Nguyên tắc 3 đi ngược trực giác của người quen QA thủ công: 300 case chấm máy hơi nhiễu tốt hơn 30 case chấm tay hoàn hảo, vì eval phải chạy được mỗi lần đổi prompt.</aside>
+
+<table>
+  <tr><th>Grader</th><th>Hợp với</th><th>Giá phải trả</th></tr>
+  <tr><td>Exact match / regex</td><td>Task có đáp án rời rạc: phân loại, extract field, format check</td><td>Giòn — đáp án đúng nhưng viết khác là trượt</td></tr>
+  <tr><td>Cosine similarity (embedding)</td><td>Đo tính nhất quán: câu hỏi diễn đạt khác nhau phải ra câu trả lời tương đương</td><td>Tốn tính toán, cần thêm embedding model</td></tr>
+  <tr><td>ROUGE-L</td><td>Tóm tắt, dịch — đo độ trùng thông tin với bản tham chiếu</td><td>Cần reference; <strong>không phạt sai sự thật</strong></td></tr>
+  <tr><td>LLM judge — Likert 1–5</td><td>Tiêu chí chủ quan: tone, đồng cảm, mức chuyên nghiệp</td><td>Tốn tiền, thêm latency, chấm không ổn định</td></tr>
+  <tr><td>LLM judge — nhị phân</td><td>Câu hỏi có/không: lộ PII chưa, có vi phạm policy không, có bịa không</td><td>Nhạy nhưng đắt; prompt chấm phải viết rất kỹ</td></tr>
+  <tr><td>Người</td><td>Khi các cách trên đều không đủ; và làm ground truth</td><td>Đắt nhất, chậm nhất, không scale</td></tr>
+</table>
+
+<p><strong>Edge case phải có trong bộ test</strong>, theo Anthropic: input rác hoặc không tồn tại; input dài quá cỡ; (với chat) input độc hại hoặc lạc đề; và — mục dễ bỏ sót nhất — <em>case mơ hồ tới mức hai người cũng không thống nhất được</em>. Case cuối không phải để chấm đúng/sai, mà để biết hệ thống hành xử thế nào khi không có đáp án đúng.</p>
+
+<p>Cuối cùng, Anthropic nhấn: "Most use cases need multidimensional evaluation along several success criteria." Một con số duy nhất che mất trade-off. Ví dụ họ đưa cho một classifier: F1 ≥ 0.85, <em>và</em> 99.5% output không độc hại, <em>và</em> 95% response dưới 200ms. Với dân backend thì quen rồi — đây là SLO, không phải một con số "chất lượng".</p>
+
+<h2>4. LLM-as-judge: bước không được bỏ</h2>
+
+<p>LLM-as-judge là cách duy nhất để nhân rộng L2, nhưng judge cũng chỉ là một model — nó cũng hallucinate, cũng thiên vị. Nên trước khi tin nó, phải <strong>căn nó với người</strong>. Quy trình Hamel làm ở Rechat, trần trụi và không có tool gì đặc biệt:</p>
+
+<ol>
+  <li>Cho judge chấm và <em>viết critique</em> trên 25–50 ví dụ.</li>
+  <li>Một người duy nhất (ở Rechat là một reviewer tên Phillip) chấm cùng bộ đó trong spreadsheet.</li>
+  <li>So hai cột, sửa prompt của judge cho tới khi khớp.</li>
+  <li>Sau khi khớp rồi, <strong>vẫn kiểm tra agreement định kỳ</strong> — không phải căn một lần rồi thôi.</li>
+</ol>
+
+<p>Hai lưu ý kỹ thuật: "Use the most powerful model you can afford" cho việc critique — đây là chỗ đáng tiêu tiền, vì sai ở judge làm hỏng mọi kết luận phía sau. Và Anthropic: "Generally best practice to use a different model to evaluate than the model used to generate the evaluated output" — cùng một model vừa làm vừa chấm thì nó chấm cao cho đúng kiểu lỗi nó hay mắc.</p>
+
+<div class="callout">
+  <span class="label">Chỗ sếp và PM hay bị lừa</span>
+  <p>"Điểm hài lòng tăng từ 3.9 lên 4.2" nghe như tiến bộ. Nhưng nếu số đó do LLM judge chấm và chưa ai đo agreement với người, thì nó chỉ nói rằng <em>judge</em> thích output mới hơn. Câu hỏi đúng phải hỏi: judge này khớp với người bao nhiêu phần trăm, đo trên bao nhiêu ví dụ, đo lần gần nhất khi nào?</p>
+</div>
+
+<h2>5. Eval cho RAG và cho agent</h2>
+
+<p><strong>RAG — tách hai tầng.</strong> Bài 5 đã nói RAG hỏng ở retrieval (lấy sai/thừa context) hoặc ở generation (context đúng nhưng model dùng sai). Eval phải tách đúng như vậy: một bộ đo retrieval (recall@K trên câu hỏi biết trước chunk nào là đáp án — chấm bằng code, không cần model) và một bộ đo câu trả lời (LLM judge hoặc người). Gộp lại thành một điểm thì mỗi lần tụt điểm không biết sửa ở đâu.</p>
+
+<p><strong>Agent — đo bằng task thật, không đo từng call.</strong> Agent chạy nhiều lượt, đường đi không đoán trước (bài 4), nên chấm từng lượt gần như vô nghĩa. Anthropic khuyên eval bộ tool bằng các task end-to-end thật lấy từ việc dùng thật, và đọc cả <em>transcript</em> chứ không chỉ kết quả cuối — vì hai agent cùng ra đáp án đúng có thể một cái đi 3 bước, cái kia đi 30 bước và đốt 10× token.<span class="sidenote-ref"></span> Trace mà bài Hamel bắt phải log chính là thứ này.</p>
+<aside class="sidenote"><a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Anthropic Engineering — "Writing effective tools for agents"</a>: eval bằng task thật, đo cả số lần gọi tool và token tiêu thụ, không chỉ đo đúng/sai. Đây cũng là số liệu để bảo vệ ngân sách trước sếp.</aside>
+
+<h2>6. Eval sai thiết kế thì nuôi hallucination</h2>
+
+<p>Đây là mảnh ghép nối ngược về bài 2. Kalai và cộng sự (OpenAI, 2025) lập luận rằng hallucination dai dẳng <strong>không phải vì model kém mà vì cách chấm</strong>:</p>
+
+<blockquote><p>"language models are optimized to be good test-takers, and guessing when uncertain improves test performance."</p></blockquote>
+
+<p>Cơ chế rất quen với bất kỳ ai từng đi thi: nếu chấm nhị phân đúng/sai và không có điểm cho "tôi không biết", thì đoán bừa luôn có kỳ vọng điểm cao hơn bỏ trống. Nhóm tác giả gọi đây là "epidemic of penalizing uncertain responses", và giải pháp họ đề xuất không phải thêm benchmark hallucination mới mà là <em>sửa cách chấm của benchmark đang có</em>.<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://arxiv.org/abs/2509.04664">Kalai, Nachum, Vempala, Zhang — "Why Language Models Hallucinate" (2025)</a>. Áp dụng vào eval nội bộ: điểm cho abstain đúng lúc, phạt nặng câu trả lời sai tự tin hơn câu "không đủ thông tin". Xem mục <strong>Abstain</strong> trong <a href="../reference/glossary.html">glossary</a>.</aside>
+
+<p>Ứng dụng trực tiếp vào eval của team anh: nếu rubric chỉ có "đúng / sai", anh đang huấn luyện chính mình chọn những prompt và model <em>đoán giỏi</em>. Rubric ba mức — đúng / thừa nhận không biết / sai tự tin — và phạt mức thứ ba nặng hơn mức thứ hai, thì mới đo được cái anh thật sự cần trong một hệ thống banking hay nội bộ.</p>
+
+<h2>7. Bắt đầu từ đâu, cụ thể</h2>
+
+<ol>
+  <li>Log trace trước tất cả: input, prompt cuối cùng, mọi tool call, output. Không log thì không có gì để nhìn.</li>
+  <li>Ngồi đọc 30–50 trace thật. Ghi ra failure mode bằng lời — chưa vội phân loại.</li>
+  <li>Cái nào kiểm được bằng code thì viết assertion ngay (L1), cho vào CI.</li>
+  <li>Cái nào cần phán đoán thì dựng judge, căn với người trên 25–50 ví dụ, ghi lại con số agreement.</li>
+  <li>Sinh thêm test case bằng LLM để nâng volume; giữ riêng edge case và case mơ hồ.</li>
+  <li>Chốt bộ metric nhiều chiều (chất lượng + an toàn + latency + cost), không một con số.</li>
+  <li>Chỉ khi eval đứng vững mới đụng tới RAG hay fine-tune (bài 5) — nếu không, không biết mình có tiến hay không.</li>
+</ol>
+
+<h2>8. Bài tập — đọc và phán đoán</h2>
+
+<details>
+  <summary>A. Team đề xuất: "Bot trả lời chưa chính xác, đổi từ Sonnet sang Opus." Anh hỏi gì trước khi duyệt?</summary>
+  <p>Ba câu, theo thứ tự:</p>
+  <p><strong>1. "Chưa chính xác" đo bằng gì, trên bao nhiêu case?</strong> Nếu câu trả lời là "user phàn nàn mấy lần" thì đây là vibe check — đổi model xong cũng không biết có tốt hơn không, và sẽ lại đổi tiếp.</p>
+  <p><strong>2. Lỗi nằm ở retrieval hay ở generation?</strong> Nếu bot là RAG và chunk lấy về đã sai, model đắt hơn không cứu được gì — nó chỉ nói sai một cách trôi chảy hơn, với giá cao hơn. Bài 5: chất lượng RAG nằm ở pipeline index.</p>
+  <p><strong>3. Đã có bộ eval để chạy lại sau khi đổi chưa?</strong> Nếu chưa — việc cần làm là dựng eval, không phải đổi model. Đổi model là thay đổi hành vi, mà một trong ba hoạt động của vòng lặp Hamel; thiếu hoạt động "đánh giá chất lượng" thì cả vòng lặp không quay được.</p>
+</details>
+
+<details>
+  <summary>B. PM báo: "Điểm chất lượng tăng từ 3.9 lên 4.2 sau khi sửa prompt. Ship thôi." Vấn đề?</summary>
+  <p><strong>Ai chấm?</strong> Nếu là LLM judge: đã đo agreement với người chưa, trên bao nhiêu ví dụ, lần gần nhất khi nào? Chưa căn thì 4.2 chỉ là ý kiến của một model về output của một model.</p>
+  <p><strong>Cùng một model vừa sinh vừa chấm?</strong> Nếu có, con số gần như vô giá trị — Anthropic khuyên dùng model khác để chấm.</p>
+  <p><strong>Một con số duy nhất.</strong> Thang Likert trung bình che mất đuôi phân bố: 4.2 có thể là "phần lớn tốt hơn, và 3% câu trả lời sai tự tin về số tiền". Trong hệ thống banking, 3% đó mới là cái cần nhìn. Cần metric nhiều chiều, và cần biết phần trăm "sai tự tin" tách khỏi phần trăm "nói không biết".</p>
+  <p><strong>Thang điểm có thưởng abstain không?</strong> Nếu không, prompt mới có thể đang "thắng" chỉ vì nó đoán bạo hơn.</p>
+</details>
+
+<h2>9. Kiểm tra lại</h2>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Theo Hamel, tầng 1 của eval gồm cái gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Assertion chạy nhanh, rẻ</li>
+    <li>Human review từng trace</li>
+    <li>A/B test người dùng</li>
+    <li>LLM judge chấm điểm</li>
+  </ul>
+  <p class="quiz-explain">L1 là unit test — assertion như viết trong pytest, tổ chức theo feature × scenario, chạy được trong CI. Human/model eval là L2, A/B là L3.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Anthropic khuyên gì về model dùng để chấm output?</p>
+  <ul class="quiz-options">
+    <li data-correct>Dùng model khác chấm</li>
+    <li>Dùng đúng model đó</li>
+    <li>Dùng model rẻ nhất</li>
+    <li>Dùng model mới nhất</li>
+  </ul>
+  <p class="quiz-explain">"Generally best practice to use a different model to evaluate than the model used to generate the evaluated output" — cùng một model thì nó bỏ qua đúng những lỗi nó hay mắc.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Vừa dựng xong một LLM-as-judge. Bước bắt buộc trước khi tin nó?</p>
+  <ul class="quiz-options">
+    <li data-correct>Đo agreement với người</li>
+    <li>Tăng số câu test</li>
+    <li>Hạ temperature về 0</li>
+    <li>Đổi sang model lớn</li>
+  </ul>
+  <p class="quiz-explain">Judge cũng là model. Rechat căn judge với một reviewer người trên 25–50 ví dụ trong spreadsheet, sửa prompt tới khi khớp, rồi vẫn kiểm tra agreement định kỳ.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Theo Kalai et al., cách chấm nào nuôi hallucination?</p>
+  <ul class="quiz-options">
+    <li data-correct>Chấm nhị phân, phạt abstain</li>
+    <li>Chấm theo thang Likert mềm</li>
+    <li>Chấm bằng người, rất chậm</li>
+    <li>Chấm theo độ dài output</li>
+  </ul>
+  <p class="quiz-explain">Không có điểm cho "tôi không biết" thì đoán bừa luôn có kỳ vọng điểm cao hơn bỏ trống: "guessing when uncertain improves test performance". Rubric cần tách "sai tự tin" khỏi "thừa nhận không biết".</p>
+</div>
+
+<hr>
+
+<h2>Đọc thêm — primary source cho bài này</h2>
+<p><a href="https://hamel.dev/blog/posts/evals/">Hamel Husain — "Your AI Product Needs Evals"</a> (~25 phút) là bài đáng đọc nguyên văn nhất trong cả workspace này: có case study thật, có ảnh chụp spreadsheet căn judge, có prompt sinh test case. Đọc kèm <a href="https://platform.claude.com/docs/en/test-and-evaluate/develop-tests">Anthropic — "Create strong empirical evaluations"</a> (~10 phút) để lấy bảng grader và danh sách edge case.</p>
+
+<div class="callout">
+  <span class="label">Hỏi tôi</span>
+  <p>Báo cho tôi <strong>hai con số</strong>: ôn trộn mục 0 được mấy/4, và quiz cuối mấy/4. Câu nào sai thì nói câu nào — tôi vá đúng chỗ đó ở bài sau thay vì dạy lại từ đầu. Có rubric hay bộ eval thật của team muốn tôi soi theo mục 3 và 6 thì đưa vào phiên <code>/teach</code>. Bài tiếp theo dự kiến: <strong>context engineering &amp; prompt caching</strong> — mở đầu bằng đúng tình huống TTL mà anh trượt ở bài 1.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0005-rag-vs-fine-tune.html">← Bài 5</a>
+  <a href="../reference/eval-playbook.html">Cheat sheet: Eval playbook →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

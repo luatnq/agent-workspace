@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 9 — Hooks: lint gate, test gate, guardrail</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0009 · Module 4 (CS146S W4) · 2026-10-25 · ~40 phút · <a href="0008-claude-md-vs-agents-md.html">Bài 8</a> · <a href="../reference/hooks.html">Cheat sheet hooks</a> · <a href="../reference/instruction-files.html">Instruction files</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Hooks: lint gate, test gate, guardrail</h1>
+<p class="subtitle">Ở Bài 8, ta đã biết <code>AGENTS.md</code> là hợp đồng chung cho cả team. Nhưng instruction file bản chất vẫn chỉ là <em>lời dặn bằng văn bản</em>: model có thể quên, có thể bỏ sót khi ngữ cảnh quá dài. Muốn biến quy ước thành luật sắt bất khả xâm phạm và tạo vòng lặp tự sửa lỗi (tight feedback loop), ta cần <strong>Hooks</strong>. Hôm nay ta sẽ gắn linter, test gate và chốt chặn an toàn trực tiếp vào vòng lặp thực thi của agent.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Phân biệt rạch ròi giữa hướng dẫn mềm (instruction) và cưỡng chế cứng (hook). Cấu hình các điểm neo vòng lặp (<code>PreToolUse</code>, <code>PostToolUse</code>) để chặn đứng hành vi nguy hiểm và tự động chạy test/linter sau mỗi lần sửa code. Thiết kế kịch bản hook đa nền tảng chạy được trên cả Claude Code lẫn Antigravity.</p>
+</div>
+
+<h2>0. Khởi động</h2>
+<p>Một câu ôn bài 8, và một câu đoán trước. Đáp án câu đoán nằm ở mục 2.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Bài 8 anh đã đạt 4/4 trắc nghiệm. Câu ôn này củng cố ranh giới giữa thứ nên và không nên đưa vào context file.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Ở bài 8, đâu là lý do quan trọng nhất khiến việc nhồi nhét mô tả kiến trúc dài hàng trăm dòng vào <code>AGENTS.md</code> bị coi là một anti-pattern?</p>
+  <ul class="quiz-options">
+    <li data-correct>Làm tăng hơn hai mươi phần trăm token mà không cải thiện hiệu quả task</li>
+    <li>Khiến cho model lập tức từ chối nhận lệnh và báo lỗi cú pháp markdown</li>
+    <li>Làm cho hệ thống git bị xung đột mã nguồn liên tục khi merge nhánh</li>
+    <li>Gây ra tình trạng vỡ bộ nhớ đệm prefix cache ở các lượt chat sau</li>
+  </ul>
+  <p class="quiz-explain">Nghiên cứu "Evaluating AGENTS.md" (2026) chứng minh việc mô tả kiến trúc dài dòng làm tăng >20% token nhưng không tăng tỉ lệ hoàn thành nhiệm vụ vì agent đã có sẵn tool khám phá repo. Tương tự, nếu anh viết vào AGENTS.md "nhớ chạy linter sau khi sửa code", model vẫn có thể quên. Thay vì viết văn xuôi, ta dùng Hook.</p>
+</div>
+
+<details>
+  <summary>Đoán trước: nếu anh muốn cấm agent tuyệt đối không được sửa các file SQL trong thư mục db/migration/, anh nên dùng PreToolUse hay PostToolUse? Nếu hook phát hiện agent đang chuẩn bị sửa file đó thì script cần trả về exit code mấy để chặn lại? Viết ra rồi mới mở.</summary>
+  <p>Giữ câu trả lời của anh. Mục 2 và 3 sẽ giải phẫu chi tiết cơ chế chặn đứng (abort) của PreToolUse.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Bản chất: Lời dặn bằng chữ vs Luật sắt bằng code</h2>
+
+<p>Trước hết, hãy so sánh hai cách tiếp cận quản trị kỹ thuật:</p>
+<ul>
+  <li><strong>Instruction (<code>AGENTS.md</code> / <code>CLAUDE.md</code>):</strong> Là <em>hướng dẫn mềm (soft guidelines)</em>. Harness nạp nó vào context như một đoạn text. Model cố gắng đọc hiểu và làm theo. Nhưng model là mạng xác suất: khi task phức tạp, context dài hoặc có xung đột, model hoàn toàn có thể "bỏ quên" luật.</li>
+  <li><strong>Hook:</strong> Là <em>rào chắn cứng (hard guardrail)</em>. Đây là code shell script hoặc binary thật do chính <strong>harness</strong> thực thi tại các thời điểm vòng lặp (lifecycle events). Model không hề biết trước hook sẽ chạy gì, và model <strong>không thể vượt rào (bypass)</strong> được hook.</li>
+</ul>
+
+<p>Với dân backend, có một phép so sánh kinh điển:</p>
+<blockquote>
+Instruction giống như comment trong code: <code>// Chú ý: bảng này không được phép xoá row</code>. Developer đọc có thể làm theo, nhưng không gì ngăn cản một câu lệnh <code>DELETE</code> chạy thẳng vào DB.<br>
+Hook giống như <strong>Database Constraint (Foreign Key / NOT NULL / Trigger)</strong> hoặc <strong>Servlet Filter / Spring Interceptor</strong>: nếu vi phạm, harness quăng exception và chặn đứng request ngay tại cửa!
+</blockquote>
+
+<p>Tài liệu chính thức của Anthropic đúc kết nguyên tắc chuyển đổi này bằng một câu rất đắt giá:<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://code.claude.com/docs/en/best-practices">Claude Code — Best practices</a>, mục "Enforcing invariants".</aside>
+
+<blockquote>
+<em>"If you find yourself repeatedly reminding Claude about the same rule, consider moving it into a hook."</em>
+<br><strong>Tạm dịch:</strong> "Nếu anh thấy mình phải liên tục nhắc nhở Claude về cùng một quy tắc, hãy cân nhắc chuyển quy tắc đó sang hook."
+</blockquote>
+
+<p><strong>Điều cần nhớ:</strong> Instruction file dựa vào trí nhớ và sự tập trung của model; Hook dựa vào cơ chế thực thi tất định của hệ điều hành. Luật nào bắt buộc 100% phải đúng thì đưa vào Hook.</p>
+
+<h2>2. Các điểm neo vòng lặp (Lifecycle Events)</h2>
+
+<p>Cả Claude Code và Antigravity đều cung cấp các điểm neo (lifecycle hooks) để xen code của anh vào giữa các bước thực thi của agent:<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://code.claude.com/docs/en/hooks">Claude Code Hooks</a> và <a href="file:///Users/luatnq/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md">Antigravity Lifecycle Hooks</a>. Hai hệ thống có cấu trúc matcher và lifecycle rất tương đồng.</aside>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+  Prompt["1. User gửi Prompt"] --> PreInv["PreInvocation Hooks"]
+  PreInv --> Model["2. Model suy luận (ReAct)"]
+  Model --> Decision{"Model quyết định:<br/>Gọi Tool hay Trả lời?"}
+
+  Decision -->|"Trả lời người dùng"| PostInv["PostInvocation Hooks"]
+  PostInv --> Done["Hoàn thành phiên"]
+
+  Decision -->|"Gọi Tool (Edit, Bash...)"| PreTool["PreToolUse Hook (Guardrail Gate)"]
+  PreTool --> GateCheck{"Hook Exit Code?"}
+
+  GateCheck -->|"Exit != 0 (Chặn đứng)"| AbortTool["Chặn tool! Bắt stderr trả về context"]
+  AbortTool --> Model
+
+  GateCheck -->|"Exit == 0 (Hợp lệ)"| ExecTool["3. Harness thực thi Tool thật"]
+  ExecTool --> PostTool["PostToolUse Hook (Lint / Test Gate)"]
+
+  PostTool --> TestCheck{"Test/Lint Exit Code?"}
+  TestCheck -->|"Exit != 0 (Lỗi code)"| FailFeedback["Bắt lỗi compiler/linter đưa vào context"]
+  FailFeedback --> Model
+
+  TestCheck -->|"Exit == 0 (Thành công)"| SuccessFeedback["Trả kết quả Tool thành công"]
+  SuccessFeedback --> Model
+</pre>
+<figcaption>Hình 1. Vòng lặp Agent có gắn Lifecycle Hooks. Nhìn vào hai chốt chặn: <code>PreToolUse</code> đóng vai trò Security Guardrail (chặn trước khi chạm vào đĩa), còn <code>PostToolUse</code> đóng vai trò Verification Gate (chạy test/linter tự động và trả phản hồi cho model tự sửa).</figcaption>
+</figure>
+
+<h3>A. PreToolUse: Chốt chặn an toàn (Guardrail Gate)</h3>
+<p>Chạy <strong>ngay trước khi</strong> tool thật sự được thực thi trên máy tính của anh.</p>
+<ul>
+  <li><strong>Dữ liệu đầu vào:</strong> Harness truyền toàn bộ tham số mà model định gọi (tên file, nội dung chuẩn bị ghi, câu lệnh bash định chạy).</li>
+  <li><strong>Quyền lực:</strong> Hook có quyền <strong>hủy bỏ (abort)</strong> lệnh gọi tool đó trước khi nó kịp chạm vào hệ điều hành.</li>
+  <li><strong>Ứng dụng tiêu biểu:</strong>
+    <ul>
+      <li>Chặn sửa các file migration database đã commit (<code>src/main/resources/db/migration/*.sql</code>).</li>
+      <li>Chặn các lệnh bash nguy hiểm (<code>rm -rf</code>, <code>git push --force</code>, <code>DROP TABLE</code>).</li>
+      <li>Chặn sửa file cấu hình hạ tầng K8s production khi đang ở môi trường local.</li>
+    </ul>
+  </li>
+</ul>
+
+<h3>B. PostToolUse: Vòng lặp phản hồi tự động (Verification Gate)</h3>
+<p>Chạy <strong>ngay sau khi</strong> tool thực thi xong trên đĩa.</p>
+<ul>
+  <li><strong>Quyền lực:</strong> Hook chạy một lệnh kiểm tra (linter, unit test, format code). Nếu kiểm tra thất bại, hook trả về lỗi. Harness sẽ tự động lấy toàn bộ thông báo lỗi đó nhồi vào context của lượt chat tiếp theo.</li>
+  <li><strong>Ứng dụng tiêu biểu:</strong>
+    <ul>
+      <li><strong>Lint Gate:</strong> Sau khi agent sửa file Java, tự động chạy <code>./gradlew spotlessApply</code>. Nếu code sai convention, spotless tự format lại hoặc báo lỗi.</li>
+      <li><strong>Test Gate:</strong> Sau khi sửa file trong `service/`, tự động chạy nhanh unit test của class đó (`./gradlew test --tests "*UnitTest"`). Nếu gãy test, lỗi compiler/assertion được ném thẳng vào mặt model để nó tự fix ngay trong phiên!</li>
+    </ul>
+  </li>
+</ul>
+
+<p><strong>Điều cần nhớ:</strong> <code>PreToolUse</code> là người gác cổng bảo vệ an toàn (chặn đứng trước khi hư hại xảy ra). <code>PostToolUse</code> là thanh tra chất lượng tự động (kiểm tra ngay sau khi sửa và trả feedback cho model tự sửa lỗi).</p>
+
+<h2>3. Cơ chế giao tiếp: Exit Code và Feedback Loop</h2>
+
+<p>Harness và Hook script nói chuyện với nhau như thế nào? Rất đơn giản và thanh thoát theo chuẩn POSIX Unix:</p>
+
+<table>
+  <tr><th>Tín hiệu</th><th>Ý nghĩa</th><th>Hành động của Harness</th></tr>
+  <tr>
+    <td><strong>Exit Code <code>0</code></strong></td>
+    <td>Thành công / Cho phép</td>
+    <td>Harness tiếp tục vòng lặp bình thường. Kết quả tool được trả về cho model.</td>
+  </tr>
+  <tr>
+    <td><strong>Exit Code khác <code>0</code></strong><br>(Thường là <code>1</code> hoặc <code>2</code>)</td>
+    <td>Thất bại / Chặn đứng</td>
+    <td>
+      - Với <code>PreToolUse</code>: Tool bị <strong>hủy bỏ hoàn toàn</strong>, không ghi file, không chạy lệnh.<br>
+      - Với cả hai: Toàn bộ output in ra <code>stderr</code> hoặc <code>stdout</code> của hook sẽ được harness bắt lại và đưa vào context như một thông báo lỗi nghiêm trọng.
+    </td>
+  </tr>
+</table>
+
+<figure class="diagram">
+<svg viewBox="0 0 680 150" role="img" aria-label="Sơ đồ vòng lặp phản hồi tự động tight feedback loop qua hook PostToolUse">
+  <rect x="10" y="25" width="140" height="60" rx="6" class="d-box"/>
+  <text x="80" y="50" class="d-small d-center d-strong">1. Agent Edit Code</text>
+  <text x="80" y="68" class="d-muted d-center">Sửa OrderService.java</text>
+
+  <line x1="150" y1="55" x2="185" y2="55" stroke="var(--color-border)" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="185" y="25" width="150" height="60" rx="6" class="d-accent-fill"/>
+  <text x="260" y="50" class="d-small d-center d-strong">2. Hook PostToolUse</text>
+  <text x="260" y="68" class="d-muted d-center">Chạy compile &amp; test</text>
+
+  <line x1="335" y1="55" x2="370" y2="55" stroke="var(--color-border)" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="370" y="25" width="140" height="60" rx="6" class="d-fill" style="stroke: var(--color-bad, #c62828);"/>
+  <text x="440" y="50" class="d-small d-center d-strong" style="fill: var(--color-bad, #c62828);">3. Compile Lỗi!</text>
+  <text x="440" y="68" class="d-muted d-center">Hook exit 1 + stderr</text>
+
+  <line x1="510" y1="55" x2="545" y2="55" stroke="var(--color-border)" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="545" y="25" width="125" height="60" rx="6" class="d-box"/>
+  <text x="607" y="50" class="d-small d-center d-strong">4. Model Tự Fix</text>
+  <text x="607" y="68" class="d-muted d-center">Không cần người nhắc</text>
+
+  <text x="340" y="125" class="d-muted d-center">Tight Feedback Loop: model nhận phản hồi ngay lập tức từ compiler/test runner thay vì chờ người review.</text>
+</svg>
+<figcaption>Hình 2. Vòng lặp phản hồi tự động (Tight Feedback Loop). Thay vì để code lỗi tích tụ đến cuối phiên hoặc chờ người dùng phát hiện, Hook biến compiler thành người phản biện tức thì cho model.</figcaption>
+</figure>
+
+<p>Đến đây anh có thể tự hỏi: nếu hook chạy test mà test mất 10 phút thì sao? Điểm mấu chốt là: <strong>Hook phải chạy cực nhanh (dưới 5–10 giây)</strong>. Đừng chạy toàn bộ integration test suite trong hook. Hãy chỉ chạy: linter, syntax check, hoặc unit test của đúng class vừa sửa. Bộ test nặng để dành cho CI/CD pipeline.</p>
+
+<p><strong>Điều cần nhớ:</strong> Hook giao tiếp bằng exit code: 0 là đi tiếp, khác 0 là chặn lại. Text in ra stderr sẽ trở thành thông điệp hướng dẫn model tự sửa sai. Giữ hook chạy thật nhanh dưới vài giây.</p>
+
+<h2>4. Cấu hình thực tế trên Claude Code và Antigravity</h2>
+
+<p>Dù chạy trên harness nào, kiến trúc tốt nhất là: <strong>viết logic kiểm tra trong shell script riêng (Git-managed)</strong>, còn file cấu hình của harness chỉ đóng vai trò khai báo liên kết.</p>
+
+<h3>A. Cấu hình trên Antigravity (`.agents/hooks.json`)</h3>
+<p>Antigravity sử dụng file [hooks.json](file:///Users/luatnq/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md) đặt trong thư mục `.agents/`:</p>
+<pre><code class="language-json">{
+  "protect-migration": {
+    "PreToolUse": [
+      {
+        "matcher": "replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/hooks/guard-migration.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "java-lint-gate": {
+    "PostToolUse": [
+      {
+        "matcher": "replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/hooks/check-java.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+
+<h3>B. Cấu hình trên Claude Code (`.claude/config.json`)</h3>
+<p>Claude Code cho phép khai báo hook tương tự trong cấu hình dự án hoặc gắn kèm vào `SKILL.md`:</p>
+<pre><code class="language-json">{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit",
+        "command": "./scripts/hooks/guard-migration.sh"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "command": "./scripts/hooks/check-java.sh"
+      }
+    ]
+  }
+}</code></pre>
+
+<h3>C. Viết script kiểm tra chuẩn (`guard-migration.sh`)</h3>
+<p>Script nhận thông tin file từ biến môi trường hoặc tham số và quyết định:</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# scripts/hooks/guard-migration.sh
+set -euo pipefail
+
+# Lấy đường dẫn file chuẩn bị sửa (tùy harness truyền qua arg hoặc env)
+TARGET_FILE="${1:-${TOOL_INPUT_TARGET_FILE:-}}"
+
+if [[ "$TARGET_FILE" =~ db/migration/V.*\.sql$ ]]; then
+  # Kiểm tra xem file này đã có trên git origin/main chưa
+  if git ls-tree -r origin/main --name-only 2&gt;/dev/null | grep -q "$TARGET_FILE"; then
+    echo "ERROR [GUARDRAIL]: File migration $TARGET_FILE đã merge vào main, CẤM SỬA!" &gt;&amp;2
+    echo "Gợi ý: Hãy tạo một file migration mới (V...__ten_migration.sql) để thay đổi schema." &gt;&amp;2
+    exit 1  # Chặn đứng tool!
+  fi
+fi
+
+exit 0  # Hợp lệ, cho phép tiếp tục</code></pre>
+
+<p><strong>Điều cần nhớ:</strong> Tách logic kiểm tra ra các script shell trong <code>scripts/hooks/</code> để dùng chung cho mọi harness và có thể chạy thử trực tiếp trên terminal của developer.</p>
+
+<h2>5. Thực hành: Xây dựng Guardrail Script cho repo (~20 phút)</h2>
+
+<p>Bài tập hôm nay sẽ giúp anh tự tay viết và kiểm thử một hook chặn an toàn thực tế.</p>
+
+<p><strong>Bước 1 — Viết script bảo vệ file migration (8 phút).</strong><br>
+Tạo một script shell nhỏ `scripts/hooks/guard-migration.sh` (hoặc viết vào nháp) kiểm tra quy tắc sau:</p>
+<ol>
+  <li>Nếu file có chứa đường dẫn `db/migration/` và kết thúc bằng `.sql`.</li>
+  <li>In ra thông báo lỗi rõ ràng bằng tiếng Việt kèm gợi ý cách giải quyết vào `stderr`.</li>
+  <li>Trả về `exit 1` nếu vi phạm, `exit 0` nếu là file bình thường.</li>
+</ol>
+
+<p><strong>Bước 2 — Chạy thử nghiệm giả lập (Simulation) (7 phút).</strong><br>
+Chạy thử script trực tiếp trên terminal với 2 trường hợp:</p>
+<pre><code># Test trường hợp hợp lệ
+./scripts/hooks/guard-migration.sh "src/main/java/com/bank/OrderService.java"
+echo "Exit code: $?"  # Phải in ra 0
+
+# Test trường hợp vi phạm
+./scripts/hooks/guard-migration.sh "src/main/resources/db/migration/V1__init.sql"
+echo "Exit code: $?"  # Phải in ra 1 và thấy thông báo lỗi</code></pre>
+
+<p><strong>Bước 3 — Thiết kế Hook cho team (5 phút).</strong><br>
+Trả lời ba câu hỏi thực hành:</p>
+<ol>
+  <li>Bước 2: Script của anh khi vi phạm có in đúng thông báo lỗi ra stderr và trả về exit code 1 không?</li>
+  <li>Trong dự án Spring Boot của team anh, ngoài việc chặn sửa migration, anh thấy <strong>PreToolUse</strong> nên dùng để chặn điều gì nữa (ví dụ: chặn sửa file pom.xml/build.gradle, chặn sửa secrets)?</li>
+  <li>Nếu một dev đề xuất gắn lệnh `./gradlew test` (toàn bộ 1.000 test case mất 5 phút) vào <strong>PostToolUse</strong> sau mỗi lần sửa file, anh sẽ giải thích trade-off cho họ thế nào và đưa ra phương án tối ưu hơn ra sao?</li>
+</ol>
+
+<details>
+  <summary>Gợi ý (mở sau khi đã suy nghĩ)</summary>
+  <p><strong>Câu 3:</strong> Vòng lặp phản hồi của coding agent đòi hỏi tính tương tác cao. Nếu mỗi lượt Edit bắt model chờ 5 phút, phiên làm việc sẽ bị tê liệt hoàn toàn, chi phí timeout tăng vọt và developer mất kiên nhẫn. Phương án tối ưu: PostToolUse chỉ chạy linter/spotless hoặc test-compile (dưới 5 giây); còn suite test đầy đủ chỉ chạy ở bước cuối trước khi commit hoặc giao cho CI/CD pipeline.</p>
+</details>
+
+<h2>6. Kiểm tra cuối bài</h2>
+<p>Ba câu trắc nghiệm tình huống và hai câu tự diễn đạt.</p>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Sự khác biệt bản chất nhất giữa một quy tắc viết trong <code>AGENTS.md</code> và một quy tắc cài đặt qua <code>Hook</code> là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>AGENTS.md là chỉ dẫn ngữ cảnh còn Hook là cưỡng chế tất định của harness</li>
+    <li>AGENTS.md chỉ áp dụng cho kiểm thử còn Hook dùng cho toàn bộ dự án</li>
+    <li>Hook làm tăng chi phí token nhiều hơn hẳn so với việc ghi vào AGENTS.md</li>
+    <li>Hook chỉ chạy được ở máy chủ còn AGENTS.md áp dụng cho mọi máy trạm</li>
+  </ul>
+  <p class="quiz-explain">AGENTS.md là context hướng dẫn mềm, model có thể quên hoặc bỏ sót khi ngữ cảnh quá tải. Hook là code thực thi cứng do chính harness chạy độc lập với model, đảm bảo tính tất định 100%.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Để ngăn chặn agent tự ý chỉnh sửa các file migration database nhạy cảm (<code>db/migration/*.sql</code>), điểm neo lifecycle nào là phù hợp nhất?</p>
+  <ul class="quiz-options">
+    <li data-correct>PreToolUse gắn với matcher của tool sửa file để chặn đứng trước khi ghi đĩa</li>
+    <li>PostToolUse để kiểm tra lại lịch sử thay đổi sau khi file đã lưu lại</li>
+    <li>Stop để gửi cảnh báo đến kênh slack của toàn team sau phiên làm việc</li>
+    <li>PreInvocation để nhắc nhở model không được chạm vào thư mục nhạy cảm dự án</li>
+  </ul>
+  <p class="quiz-explain">PreToolUse can thiệp ngay trước khi tool thực thi, cho phép harness hủy bỏ thao tác ghi đĩa trước khi bất kỳ hư hại nào xảy ra. PostToolUse thì file đã bị sửa mất rồi.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Khi một script hook kiểm tra biên dịch (PostToolUse) phát hiện lỗi và trả về exit code khác 0, điều gì xảy ra tiếp theo trong vòng lặp của agent?</p>
+  <ul class="quiz-options">
+    <li data-correct>Harness đưa thông báo lỗi vào context để model tự nhận biết và sửa lại mã</li>
+    <li>Phiên làm việc ngắt kết nối ngay lập tức và toàn bộ tiến trình dừng lại</li>
+    <li>Model tự động hoàn tác toàn bộ thay đổi vừa thực hiện trên cây thư mục</li>
+    <li>Harness tự động kích hoạt lệnh git commit nhằm lưu trạng thái lỗi của dự án</li>
+  </ul>
+  <p class="quiz-explain">Khi PostToolUse fail, harness thu thập stderr của script và đưa vào context như một phản hồi hệ thống ở lượt tiếp theo, giúp model tự sửa code mà không cần con người can thiệp.</p>
+</div>
+
+<details>
+  <summary>Tự diễn đạt 1: Giải thích cho một thành viên trong team cơ chế hoạt động của một "Lint Gate" qua PostToolUse bằng thuật ngữ backend.</summary>
+  <p>PostToolUse hoạt động như một Post-Handle Interceptor: sau khi agent gọi tool sửa file mã nguồn xong, harness lập tức kích hoạt linter script (như Spotless/Checkstyle). Nếu có lỗi vi phạm cú pháp hoặc format, script in lỗi ra stderr và exit 1. Harness biến thông điệp này thành exception ném ngược lại context của agent, buộc agent phải tiến hành lượt sửa thứ hai để khắc phục lỗi ngay tại chỗ.</p>
+</details>
+
+<details>
+  <summary>Tự diễn đạt 2: Nối Bài 8 (Instruction) và Bài 9 (Hooks). Khi nào thì một quy định của team nên dừng ở AGENTS.md, và khi nào bắt buộc phải nâng cấp thành Hook?</summary>
+  <p>Dừng ở AGENTS.md khi quy định mang tính <strong>ngữ nghĩa, phong cách thiết kế, hướng dẫn chọn thư viện hoặc cách tiếp cận</strong> (thứ model cần hiểu để suy luận). Nâng cấp thành Hook khi quy định là <strong>luật sắt về an toàn, tính toàn vẹn dữ liệu, hoặc kiểm tra cú pháp bắt buộc không được phép có ngoại lệ</strong> (chặn sửa migration đã merge, chặn commit secret, format code theo chuẩn team).</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>Tóm lại</h2>
+<ul>
+  <li><strong>Instruction vs Hook:</strong> Instruction là comment trong code; Hook là database constraint. Luật bất khả xâm phạm phải dùng Hook.</li>
+  <li><strong>Hai điểm neo cốt lõi:</strong>
+    <ul>
+      <li><code>PreToolUse</code>: Guardrail bảo vệ an toàn (chặn trước khi chạm đĩa).</li>
+      <li><code>PostToolUse</code>: Verification gate (chạy test/linter và trả feedback cho model tự sửa).</li>
+    </ul>
+  </li>
+  <li><strong>Giao tiếp POSIX:</strong> Exit code 0 là hợp lệ; exit khác 0 là chặn lại. Text in ra <code>stderr</code> trở thành chỉ dẫn tự sửa lỗi cho agent.</li>
+  <li><strong>Quy tắc thời gian:</strong> Hook phải chạy cực nhanh (dưới vài giây). Test nặng để dành cho bước commit hoặc CI/CD pipeline.</li>
+  <li><strong>Mô hình script tách rời:</strong> Viết logic kiểm tra trong <code>scripts/hooks/</code> để dùng chung cho cả Antigravity lẫn Claude Code.</li>
+</ul>
+<p>Bài 10 ta sẽ hoàn tất Module 4 với chủ đề rất nóng trong kiến trúc agent hiện đại: <strong>Subagent &amp; Multi-agent: planner / implementer / reviewer</strong>. Ta sẽ phân tích khi nào nên cô lập context bằng subagent, và so sánh nhanh với các framework như LangGraph hay CrewAI.</p>
+
+<h2>Đọc thêm</h2>
+<p><strong>Nguồn chính:</strong> Đọc tài liệu <a href="https://code.claude.com/docs/en/hooks">Claude Code Hooks Reference</a> để nắm các event lifecycle được hỗ trợ. Đọc đối chiếu với tài liệu <a href="file:///Users/luatnq/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md">Antigravity Lifecycle Hooks</a> trong chính máy của anh để thấy sự tương đồng kiến trúc.</p>
+
+<div class="callout">
+  <span class="label">Báo lại cho tôi</span>
+  <p><strong>Bài 9:</strong> (1) Khởi động <strong>x/1</strong> và câu đoán của anh. (2) Cuối bài <strong>y/3</strong>, kèm đáp án đã chọn nếu sai, và 2 câu tự diễn đạt. (3) Ba câu hỏi thực hành của mục 5 (kết quả test script guardrail, ý tưởng PreToolUse khác, và trade-off thời gian chạy test trong hook). Chỗ nào còn băn khoăn, cứ phản biện.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0008-claude-md-vs-agents-md.html">← Bài 8: CLAUDE.md vs AGENTS.md</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0010-subagent-va-multi-agent-planner-implementer-reviewer.html">Bài 10: Subagent &amp; Multi-agent →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/diagram.js"></script>
+</body>
+</html>

@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 11 — Agent-ready codebase: chấm điểm và audit</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0011 · Module 5 (CS146S W5) · 2026-10-25 · ~45 phút · <a href="0010-subagent-va-multi-agent-planner-implementer-reviewer.html">Bài 10</a> · <a href="../reference/agent-ready.html">Cheat sheet agent-ready</a> · <a href="../reference/subagents.html">Subagents</a> · <a href="../reference/hooks.html">Hooks</a> · <a href="../reference/instruction-files.html">Instruction files</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Agent-ready codebase: chấm điểm và audit</h1>
+<p class="subtitle">Chào mừng anh đến với <strong>Module 5: Codebase sẵn sàng cho agent &amp; Kỹ thuật Eval</strong>. Trong suốt 20 năm qua, toàn bộ ngành công nghiệp phần mềm được thiết kế xoay quanh trải nghiệm của con người (Human Developer Experience). Nhưng khi đưa Coding Agent vào dự án, ta phát hiện một nghịch lý: những codebase khiến lập trình viên kỳ cựu "vẫn sống sót được" lại là mồ chôn khiến các tác tử AI tự hành tê liệt hoàn toàn. Hôm nay ta sẽ học cách <strong>định lượng mức độ sẵn sàng cho agent (Agent-Readiness)</strong> và quy trình audit một repo thực chiến.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Chỉ rõ sự khác biệt bản chất giữa việc tối ưu repo cho người đọc và tối ưu cho agent hành động. Sử dụng <strong>Bảng chấm điểm Agent-Ready Scorecard (100 điểm)</strong> trên 4 trụ cột để audit một repository Java/Spring Boot bất kỳ. Lập kế hoạch hành động cải tiến chia theo nhóm Quick Wins (ROI cao nhất, làm trong 1–2 giờ) và Đầu tư chiến lược.</p>
+</div>
+
+<h2>0. Khởi động</h2>
+<p>Một câu ôn bài 10 (củng cố cơ chế cô lập context), và một câu đoán trước. Đáp án câu đoán nằm ở mục 1.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Bài 10 anh đã hoàn thành xuất sắc 4/4 trắc nghiệm. Câu ôn này kiểm tra bản chất kinh tế token đằng sau Subagent.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Ở bài 10, đâu là lý do kỹ thuật quan trọng nhất khiến việc chia subagent giúp bảo vệ ngữ cảnh làm việc của agent chính?</p>
+  <ul class="quiz-options">
+    <li data-correct>Toàn bộ dữ liệu đọc file trung gian bị giải phóng và chỉ giữ lại bản tóm tắt</li>
+    <li>Mô hình ngôn ngữ có thể gia tăng tốc độ xử lý câu lệnh lên gấp nhiều lần</li>
+    <li>Hệ thống máy tính tự động nâng cấp dung lượng bộ nhớ ram trong suốt cả phiên chạy</li>
+    <li>Các tiến trình kiểm thử đơn vị được thực thi song song trên rất nhiều luồng hệ thống</li>
+  </ul>
+  <p class="quiz-explain">Subagent chạy trên một context fork độc lập. Hàng chục nghìn token rác phát sinh từ việc đọc các file tham khảo trung gian sẽ bị thu gom rác (garbage collect) hoàn toàn khi subagent kết thúc, chỉ trả về một bản tóm tắt ngắn (summary) cho main agent.</p>
+</div>
+
+<details>
+  <summary>Đoán trước: Giữa việc bổ sung 50 trang tài liệu kiến trúc hệ thống bằng file Word/Confluence và việc rút ngắn thời gian chạy bộ unit test từ 15 phút xuống còn 15 giây, việc nào làm tăng năng suất của coding agent lên gấp 3 lần? Viết ra rồi mới mở.</summary>
+  <p>Chính xác là <strong>rút ngắn thời gian chạy unit test xuống 15 giây</strong>! Agent không thể đọc hiểu và tin tưởng 50 trang Word văn xuôi cũ kỹ, nhưng một test suite 15 giây cung cấp <em>vòng lặp phản hồi siêu tốc (tight feedback loop)</em> giúp agent tự sửa sai ngay lập tức.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Sự dịch chuyển tư duy: Human-Centric vs Agent-Centric</h2>
+
+<p>Hãy nhìn lại cách một đội ngũ kỹ thuật backend truyền thống tổ chức một dự án:</p>
+
+<div class="diagram">
+<pre>
+┌──────────────────────────────────────────────┐       ┌──────────────────────────────────────────────┐
+│        Human-Centric Codebase (Cũ)           │       │        Agent-Ready Codebase (Mới)            │
+├──────────────────────────────────────────────┤       ├──────────────────────────────────────────────┤
+│ • Tài liệu lưu rải rác trên Wiki/Confluence  │       │ • Single Source of Truth (AGENTS.md ngắn)    │
+│ • Setup môi trường tốn 2 ngày (hỏi đồng nghiệp)│     │ • Hermetic build (1 lệnh docker/gradlew chạy)│
+│ • Test suite chạy mất 45 phút trên CI        │  ==>  │ • Fast test subset chạy cục bộ &lt;15 giây      │
+│ • Quy ước code nằm trong đầu Tech Lead       │       │ • Linter/Formatter tự động sửa (Spotless)    │
+│ • Lỗi runtime chỉ phát hiện khi deploy UAT   │       │ • Lifecycle Hooks cưỡng chế chốt an toàn     │
+└──────────────────────────────────────────────┘       └──────────────────────────────────────────────┘
+</pre>
+</div>
+
+<p>Con người có khả năng bù đắp cho một codebase tồi bằng <strong>giao tiếp phi chính thức</strong>: khi build lỗi, ta quay sang hỏi bạn ngồi cạnh; khi thiếu biến môi trường, ta xin file <code>.env</code> qua Slack; khi test quá lâu, ta bỏ qua test local và đẩy thẳng lên CI.</p>
+
+<p>Nhưng một <strong>Coding Agent</strong> thì không thể làm như vậy:<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Anthropic đúc kết: <em>"An agent is only as good as the feedback loop of its environment."</em> (Một agent chỉ thông minh bằng chính vòng lặp phản hồi của môi trường nó đang chạy).</aside>
+
+<ul>
+  <li>Agent không thể mở Confluence để đọc hướng dẫn truyền miệng.</li>
+  <li>Agent không thể đoán được cần cài biến môi trường nào nếu không có file mẫu chuẩn.</li>
+  <li>Agent <strong>không thể kiên nhẫn chờ 45 phút</strong> chạy regression test để biết một dòng code vừa sửa có bị lỗi cú pháp hay không. Một turn kéo dài 45 phút sẽ giết chết hoàn toàn vòng lặp ReAct!</li>
+</ul>
+
+<div class="callout">
+  <span class="label">So sánh Backend</span>
+  <p>Một Human-Centric Codebase giống như một <strong>Web Portal cho người dùng click chuột</strong>: có banner, có chữ giải thích dài dòng, nhiều bước xác nhận thủ công.<br>
+  Một Agent-Ready Codebase giống như một <strong>REST/gRPC API chuẩn mực</strong>: có contract máy đọc được (machine-actionable), phản hồi mã lỗi HTTP tất định, xử lý idempotent, và trả về kết quả trong vài mili-giây!</p>
+</div>
+
+<h2>2. Bốn trụ cột của Agent-Readiness (The 4 Pillars)</h2>
+
+<p>Để đánh giá một kho mã nguồn có sẵn sàng cho AI tự hành hay không, ta dựa trên 4 trụ cột kỹ thuật:</p>
+
+<h3>Trụ cột 1: Structure &amp; Discoverability (Cấu trúc &amp; Khả năng khám phá)</h3>
+<p>Một codebase dễ cho agent khám phá là codebase có cấu trúc phân tầng tự diễn giải:</p>
+<ul>
+  <li>Tuân thủ chuẩn quy ước đóng gói (Maven/Gradle standard directory layout): <code>src/main/java</code>, <code>src/test/java</code>.</li>
+  <li>Ranh giới module rõ ràng (Clean / Hexagonal Architecture): phân tách rạch ròi giữa domain logic, adapter hạ tầng và DTO giao tiếp.</li>
+  <li>Có file <strong><code>AGENTS.md</code> chuẩn mực</strong>: dài dưới 200 dòng, chỉ chứa các quy ước khác thường (non-standard conventions) và các lệnh CLI thực dụng nhất.</li>
+</ul>
+
+<h3>Trụ cột 2: Deterministic Environment &amp; Hermetic Build</h3>
+<p>Bản build phải hoàn toàn độc lập với môi trường máy của từng kỹ sư:</p>
+<ul>
+  <li>Có sẵn wrapper script: <code>./gradlew</code> hoặc <code>./mvnw</code>. Agent không cần quan tâm máy chủ cài JDK 17 hay JDK 21 ở đường dẫn nào.</li>
+  <li>Khởi tạo phụ thuộc ngoại vi chỉ bằng 1 lệnh duy nhất: <code>docker compose up -d</code> (dựng PostgreSQL, Redis, Kafka local).</li>
+  <li>Có sẵn file <code>.env.example</code> hoặc profile cấu hình local (<code>application-local.yml</code>) không đòi hỏi tài khoản cloud thật.</li>
+</ul>
+
+<h3>Trụ cột 3: Verifiability &amp; Fast Feedback Gates</h3>
+<p>Đây là <strong>trụ cột sống còn nhất</strong> đối với coding agent:</p>
+<ul>
+  <li><strong>Fast Test Subset:</strong> Phải có cơ chế chạy một tập hợp test siêu nhanh (chỉ chạy Unit Test của class vừa sửa, hoàn thành trong <strong>dưới 15–30 giây</strong>). Nếu mỗi lần sửa một method mà bắt agent chạy 2.000 bài test tích hợp mất 20 phút, chi phí và thời gian sẽ bùng nổ.</li>
+  <li><strong>Automated Formatting &amp; Linter:</strong> Dự án phải có công cụ auto-format có thể gọi từ dòng lệnh (ví dụ: <code>./gradlew spotlessApply</code>). Thay vì để agent đoán quy tắc thụt dòng, ta để tool định dạng tự động sửa trong 2 giây.</li>
+  <li><strong>Static Typing &amp; Compilation Feedback:</strong> Java/Spring có lợi thế khổng lồ so với Python/JS: compiler (<code>javac</code>) phát hiện lập tức 80% lỗi ngớ ngẩn (thiếu import, sai kiểu dữ liệu, thiếu param). Kết hợp với `PostToolUse` hook, agent sẽ tự động sửa lỗi ngay khi compiler báo lỗi.</li>
+</ul>
+
+<h3>Trụ cột 4: Safety &amp; Guardrails (An toàn &amp; Chốt chặn)</h3>
+<ul>
+  <li>Tuyệt đối không lưu trữ hard-coded secret, API key hay private key trong mã nguồn hoặc lịch sử git commit.</li>
+  <li>Có <strong><code>PreToolUse</code> hooks</strong> để bảo vệ các tài nguyên không thể đảo ngược: chặn sửa file migration (<code>db/migration/*.sql</code>), chặn các lệnh bash nguy hiểm (<code>DROP DATABASE</code>, <code>rm -rf /</code>).</li>
+  <li>Tài khoản database môi trường dev/local chỉ được cấp quyền trong schema thử nghiệm, không có quyền can thiệp vào dữ liệu thật.</li>
+</ul>
+
+<h2>3. Thang điểm Agent-Ready Scorecard (100 điểm)</h2>
+
+<p>Bảng chấm điểm chuẩn mực 10 tiêu chí (mỗi tiêu chí tối đa 10 điểm):<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Xem bản tóm tắt và tiêu chuẩn chi tiết tại <a href="../reference/agent-ready.html">Cheat sheet agent-ready</a>.</aside>
+
+<table>
+  <tr><th>#</th><th>Tiêu chí đánh giá</th><th>Trọng số</th><th>Mô tả đạt 10/10</th></tr>
+  <tr>
+    <td>1</td>
+    <td><strong>Instruction File</strong></td>
+    <td>10 điểm</td>
+    <td>Có <code>AGENTS.md</code> ở root (&lt;200 dòng), ngắn gọn, chứa non-standard conventions, không văn xuôi rác.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>Hermetic Build</strong></td>
+    <td>10 điểm</td>
+    <td>Có wrapper (<code>./gradlew</code> / <code>./mvnw</code>), build thành công ngay trong container sạch không cần cấu hình ngoài.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>Fast Test Loop</strong></td>
+    <td>10 điểm</td>
+    <td>Có lệnh chạy unit test của 1 class/package hoàn thành trong <strong>dưới 15 giây</strong>.</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><strong>CLI Formatter/Linter</strong></td>
+    <td>10 điểm</td>
+    <td>Có lệnh auto-fix style bằng CLI (<code>spotlessApply</code>), agent chạy được mà không cần IDE mở sẵn.</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td><strong>Local Dependencies</strong></td>
+    <td>10 điểm</td>
+    <td>DB, Cache, Queue dựng bằng 1 lệnh <code>docker compose up -d</code> hoặc Testcontainers độc lập.</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td><strong>Explicit Contracts</strong></td>
+    <td>10 điểm</td>
+    <td>Tận dụng Java Strong Typing, DTO có Bean Validation (<code>@NotNull</code>), API có OpenAPI/Swagger rõ ràng.</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td><strong>Clean Boundaries</strong></td>
+    <td>10 điểm</td>
+    <td>Phân tách domain/layer rõ ràng, không có quan hệ phụ thuộc vòng tròn (circular dependency).</td>
+  </tr>
+  <tr>
+    <td>8</td>
+    <td><strong>Automated Guardrails</strong></td>
+    <td>10 điểm</td>
+    <td>Có Lifecycle Hook chặn sửa file migration hoặc lệnh phá hoại trước khi tool thực thi.</td>
+  </tr>
+  <tr>
+    <td>9</td>
+    <td><strong>Mocking &amp; Fixtures</strong></td>
+    <td>10 điểm</td>
+    <td>Có sẵn dữ liệu mẫu (fixtures) và Mockito mocks để test nhanh mà không cần gọi network ra ngoài.</td>
+  </tr>
+  <tr>
+    <td>10</td>
+    <td><strong>Actionable Logging</strong></td>
+    <td>10 điểm</td>
+    <td>Log lỗi compiler/test súc tích, chỉ in root cause, không xả hàng nghìn dòng stacktrace làm tràn context.</td>
+  </tr>
+</table>
+
+<h3>Phân loại cấp độ sẵn sàng</h3>
+<ul>
+  <li><strong>0 – 39 điểm: Agent-Hostile (Thù địch với Agent)</strong><br>
+  Agent vào là kẹt: không thể build local, test mất hàng giờ hoặc lỗi tùm lum, thiếu thông tin môi trường. Agent sẽ làm hỏng code hoặc làm cháy ngân sách token.</li>
+  <li><strong>40 – 70 điểm: Agent-Tolerant (Chấp nhận được)</strong><br>
+  Agent làm việc được nhưng cần người dùng cầm tay chỉ việc liên tục, chi phí token cao do context bị ô nhiễm.</li>
+  <li><strong>71 – 90 điểm: Agent-Friendly (Thân thiện)</strong><br>
+  Agent tự khám phá code, sửa mã nguồn, tự chạy unit test và linter để sửa sai. Năng suất lập trình tăng 2–3 lần.</li>
+  <li><strong>91 – 100 điểm: Agent-Native (Tự hành hoàn hảo)</strong><br>
+  Codebase hoạt động như một cỗ máy tự động: agent nhận task, tự code, tự verify qua test gate/lint gate và tạo Pull Request đạt chuẩn.</li>
+</ul>
+
+<h2>4. Case Study: Audit một dịch vụ Spring Boot Ngân Hàng</h2>
+
+<p>Hãy xem xét một case study thực tế từ một dịch vụ xử lý thanh toán (Payment Service) có tuổi đời 5 năm tại một ngân hàng:</p>
+
+<h3>Hiện trạng trước khi Audit (Điểm số: 35/100 — Agent-Hostile)</h3>
+<ul>
+  <li>Không có <code>AGENTS.md</code>. README dài 400 dòng nhưng viết từ 3 năm trước, một nửa câu lệnh đã lỗi thời.</li>
+  <li>Lệnh test <code>./gradlew test</code> chạy mất <strong>38 phút</strong> vì khởi động toàn bộ Spring Context và kết nối tới database Oracle dev chung của cả phòng ban.</li>
+  <li>Formatting quy định trên giấy; linter SonarQube chỉ chạy trên Jenkins CI sau khi tạo Pull Request. Mỗi lần agent đẩy code lên là bị CI từ chối vì sai checkstyle.</li>
+  <li>Một kỹ sư thử giao cho Claude Code fix bug tính thuế: Agent chạy 15 tool calls, đọc tài liệu Confluence không thành công, chạy test bị timeout, tiêu tốn 12 USD tiền token mà không sửa được gì.</li>
+</ul>
+
+<h3>Kế hoạch hành động cải tiến (Action Plan có thứ tự ưu tiên)</h3>
+
+<div class="callout">
+  <span class="label">Chiến lược thực thi</span>
+  <p>Đừng cố gắng biến một repo cũ thành 100 điểm ngay trong một đêm! Hãy tập trung vào các <strong>Quick Wins có ROI cao nhất</strong> trước để đưa repo từ 35 điểm lên 75 điểm (Agent-Friendly) chỉ trong vòng vài giờ làm việc.</p>
+</div>
+
+<ol>
+  <li><strong>Giai đoạn 1: Quick Wins (Làm trong 1–2 giờ — Điểm số tăng từ 35 $\to$ 65):</strong>
+    <ul>
+      <li>Tạo file <code>AGENTS.md</code> ngắn gọn (80 dòng): liệt kê đúng 3 lệnh: lệnh build, lệnh chạy unit test của 1 class (<code>./gradlew test --tests *UnitTest</code>), và quy ước non-standard về xử lý tiền tệ (dùng <code>BigDecimal</code> với <code>RoundingMode.HALF_UP</code>).</li>
+      <li>Tích hợp plugin Spotless vào <code>build.gradle</code>: cung cấp lệnh <code>./gradlew spotlessApply</code> để agent tự động format code trước khi kiểm tra.</li>
+    </ul>
+  </li>
+  <li><strong>Giai đoạn 2: Tối ưu hóa vòng lặp phản hồi (Làm trong 1–2 ngày — Điểm số tăng từ 65 $\to$ 85):</strong>
+    <ul>
+      <li>Tách bạch <code>UnitTest</code> (chạy thuần túy với Mockito, không nhấc Spring Context, chạy xong trong <strong>8 giây</strong>) và <code>IntegrationTest</code> (chỉ chạy trước khi merge PR).</li>
+      <li>Cấu hình <code>PostToolUse</code> hook: tự động chạy spotless và unit test ngay sau khi agent sửa code Java.</li>
+      <li>Cấu hình <code>PreToolUse</code> hook: chặn agent sửa các file migration Liquibase/Flyway.</li>
+    </ul>
+  </li>
+  <li><strong>Giai đoạn 3: Hiện đại hóa hạ tầng (Đầu tư chiến lược dài hạn — Điểm số đạt 90+):</strong>
+    <ul>
+      <li>Thay thế kết nối Oracle dev dùng chung bằng Testcontainers chạy trên Docker local.</li>
+      <li>Xây dựng test fixtures mẫu cho các kịch bản giao dịch cốt lõi.</li>
+    </ul>
+  </li>
+</ol>
+
+<p><strong>Kết quả:</strong> Sau khi hoàn thành Giai đoạn 1 và 2 (chỉ tốn khoảng 1,5 ngày công của Tech Lead), tỷ lệ agent giải quyết thành công các bug vừa và nhỏ trong dịch vụ này tăng từ <strong>0% lên 78%</strong>, và thời gian trung bình để hoàn thành một nhiệm vụ giảm từ vài tiếng xuống còn 4 phút!</p>
+
+<h2>5. Kiểm tra hiểu biết cuối bài</h2>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Trong các tiêu chí của một codebase Agent-Ready, yếu tố nào đem lại giá trị cao nhất cho vòng lặp của agent?</p>
+  <ul class="quiz-options">
+    <li data-correct>Có lệnh chạy kiểm thử đơn vị cục bộ nhanh chóng và công cụ định dạng tự động</li>
+    <li>Có tài liệu hướng dẫn nghiệp vụ dài hàng trăm trang lưu trữ trên hệ thống nội bộ</li>
+    <li>Có số lượng các lớp đối tượng kế thừa phức tạp trải dài qua nhiều tầng thư mục</li>
+    <li>Có cấu hình môi trường máy chủ phức tạp đòi hỏi phải kích hoạt thủ công bằng tay</li>
+  </ul>
+  <p class="quiz-explain">Coding agent vận hành theo vòng lặp ReAct (Thought -> Action -> Observation). Việc có lệnh chạy unit test cục bộ siêu nhanh (<15s) và linter tự động sửa format cung cấp phản hồi tất định tức thì, giúp agent tự sửa sai mà không làm đứt gãy mạch suy luận.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Tại sao một bộ test suite chạy mất 45 phút lại bị coi là rào cản lớn nhất đối với coding agent?</p>
+  <ul class="quiz-options">
+    <li data-correct>Làm đứt gãy vòng lặp phản hồi nhanh khiến cho chi phí và độ trễ gia tăng cao</li>
+    <li>Khiến cho máy chủ cơ sở dữ liệu bị quá tải và ngắt toàn bộ kết nối mạng</li>
+    <li>Làm cho model tự động xóa bỏ toàn bộ mã nguồn vừa viết trên cây thư mục này</li>
+    <li>Gây ra hiện tượng xung đột dữ liệu giữa các nhánh phân chia trên kho lưu trữ chung</li>
+  </ul>
+  <p class="quiz-explain">Khi test suite chạy quá lâu, agent phải chờ đợi hàng chục phút ở mỗi turn để nhận feedback. Điều này làm độ trễ tăng vọt, tiêu tốn token duy trì phiên làm việc, và làm hỏng hoàn toàn tính tự hành của agent. Giải pháp là tạo test subset chỉ chạy các unit test liên quan trong vài giây.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Khi bắt đầu chuyển đổi một repo cũ sang chuẩn Agent-Ready, đâu là hành động Quick Win có ROI cao nhất?</p>
+  <ul class="quiz-options">
+    <li data-correct>Viết file chỉ dẫn ngắn gọn chứa quy ước khác thường và gắn hook tự động format mã</li>
+    <li>Viết lại toàn bộ kiến trúc microservices sang một ngôn ngữ lập trình hoàn toàn mới mẻ này</li>
+    <li>Tạo hàng loạt tài liệu mô tả chi tiết từng hàm chức năng trong dự án phần mềm</li>
+    <li>Xóa bỏ toàn bộ các bài kiểm thử tự động nhằm giảm thời gian thực thi mã nguồn</li>
+  </ul>
+  <p class="quiz-explain">Viết AGENTS.md ngắn gọn chứa non-standard conventions và tích hợp lệnh auto-format (Spotless) chỉ tốn 1–2 giờ thực hiện nhưng giải quyết ngay 80% các lỗi ngớ ngẩn của agent (lệch convention, lỗi checkstyle khi tạo PR), mang lại tỷ suất hoàn vốn (ROI) cao nhất.</p>
+</div>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<details>
+  <summary>Tự diễn đạt 1: Giải thích sự khác biệt cơ bản giữa việc tối ưu repo cho Human Onboarding và tối ưu cho Agent Onboarding bằng kinh nghiệm lead team của anh.</summary>
+  <p><em>Gợi ý đối chiếu:</em> Human Onboarding tập trung vào văn bản giải thích tổng quan, sơ đồ kiến trúc trực quan, và các buổi trao đổi 1-on-1 để người mới hiểu "bức tranh lớn". Agent Onboarding tập trung vào tính máy-thực-thi (machine-actionable): các lệnh CLI tất định, script đóng gói hermetic, feedback loop dưới 15 giây, và chốt chặn an toàn cứng để agent tự khám phá mà không thể gây hư hại.</p>
+</details>
+
+<details>
+  <summary>Tự diễn đạt 2: Nếu anh cần thuyết phục Engineering Director dành ra 2 ngày sprint của team để dọn dẹp repo theo chuẩn Agent-Ready, anh sẽ lập luận trade-off và tính toán ROI như thế nào?</summary>
+  <p><em>Gợi ý đối chiếu:</em> Nhấn mạnh vào 3 luận điểm: (1) Chi phí token giảm 50% vì không phải nhồi tài liệu rác và lặp lại turn; (2) Tỷ lệ agent giải quyết thành công ticket tăng từ 20% lên 70%+, giải phóng kỹ sư khỏi các task lặt vặt (refactor nhỏ, viết test, sửa lỗi linter); (3) Các cải tiến cho agent (test nhanh, auto-format, hermetic build) thực chất cũng giúp chính các kỹ sư con người làm việc nhanh hơn và giảm bug trên production.</p>
+</details>
+
+<h2>6. Thực hành: Audit và Chấm điểm Repo công việc</h2>
+
+<p>Hãy áp dụng Scorecard 100 điểm để audit một repository thật:</p>
+
+<ol>
+  <li><strong>Bước 1: Chọn đối tượng audit:</strong> Chọn repo chính mà team anh đang phụ trách (hoặc chính workspace <code>my-agent</code> này).</li>
+  <li><strong>Bước 2: Chấm điểm theo 10 tiêu chí:</strong>
+    <ul>
+      <li>Mở <a href="../reference/agent-ready.html">Cheat sheet agent-ready</a>, đối chiếu từng mục từ 1 đến 10.</li>
+      <li>Ghi nhận điểm số thực tế (từ 0 đến 10 cho mỗi tiêu chí). Tổng điểm đạt được là bao nhiêu? Repo thuộc nhóm nào (Hostile, Tolerant, Friendly, hay Native)?</li>
+    </ul>
+  </li>
+  <li><strong>Bước 3: Lập danh sách Action Items có thứ tự ưu tiên:</strong>
+    <ul>
+      <li>Chọn ra <strong>2 Quick Wins</strong> anh có thể triển khai ngay trong 1 buổi sáng (ví dụ: tạo <code>AGENTS.md</code> và lệnh <code>spotlessApply</code>).</li>
+      <li>Chọn ra <strong>1 cải tiến trung hạn</strong> (ví dụ: tách fast test runner hoặc cài <code>PostToolUse</code> hook).</li>
+    </ul>
+  </li>
+  <li><strong>Bước 4: Kiểm tra tính năng lưu log trắc nghiệm:</strong> Trả lời bộ câu hỏi trắc nghiệm ở trên, F5 kiểm tra phục hồi, và bấm <strong>"📋 Sao chép báo cáo kết quả gửi Agent"</strong> để dán kết quả vào chat cùng trao đổi!</li>
+</ol>
+
+<h2>Tóm tắt cốt lõi</h2>
+<ul>
+  <li><strong>Codebase tốt cho người chưa chắc tốt cho agent:</strong> Agent cần lệnh CLI tất định, feedback loop dưới 15 giây, và quy ước máy đọc được thay vì tài liệu văn xuôi dài dòng.</li>
+  <li><strong>Bốn trụ cột:</strong> Structure &amp; Discoverability, Deterministic Environment, Verifiability &amp; Fast Gates, Safety &amp; Guardrails.</li>
+  <li><strong>Ưu tiên Quick Wins:</strong> Viết <code>AGENTS.md</code> chuẩn và công cụ auto-format mang lại ROI cao nhất ngay trong ngày đầu tiên.</li>
+</ul>
+
+<nav class="lesson-nav">
+  <a href="0010-subagent-va-multi-agent-planner-implementer-reviewer.html">← Bài 10: Subagent &amp; Multi-agent</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0012-eval-cho-coding-agent.html">Bài 12: Eval cho coding agent →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

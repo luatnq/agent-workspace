@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Coding agent internals</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Coding agent internals · cập nhật 2026-09-26 · <a href="../lessons/0001-ben-trong-coding-agent.html">Bài 1</a> · <a href="lo-trinh.html">Lộ trình</a></p>
+
+<h1>Coding agent internals</h1>
+<p class="subtitle">Agent = model + harness. Model chỉ sinh text. Harness làm mọi việc còn lại: cung cấp tool, thực thi, quản lý context, kiểm soát quyền.</p>
+
+<h2>Vòng lặp</h2>
+<pre><code>while (user gõ input):
+    conversation += user_msg
+    while (true):                       # vòng trong
+        resp = LLM(system + tools + conversation)
+        calls = parse_tool_calls(resp)
+        if calls rỗng: in resp; break
+        for call in calls:
+            result = harness.execute(call)   # model KHÔNG chạm file
+            conversation += tool_result(result)</code></pre>
+<p>Ba pha theo Claude Code: <strong>gather context → take action → verify results</strong>, lặp lại và hòa vào nhau (<a href="https://code.claude.com/docs/en/how-claude-code-works">nguồn</a>).</p>
+
+<h2>Tool theo pha</h2>
+<table>
+  <tr><th>Pha</th><th>Tool (Claude Code)</th><th>Ghi chú</th></tr>
+  <tr><td>Gather</td><td>Read, Glob, Grep, Bash (<code>rg</code>, <code>git log</code>)</td><td>Agentic search (grep) thay vì semantic search</td></tr>
+  <tr><td>Act</td><td>Edit, Write, Bash</td><td>Write/Edit cần permission</td></tr>
+  <tr><td>Verify</td><td>Bash (build, test, lint)</td><td>Rules-based rẻ và tin cậy nhất; ngoài ra có visual và LLM-as-judge</td></tr>
+</table>
+
+<h2>Edit: ba điều kiện</h2>
+<table>
+  <tr><th>Điều kiện</th><th>Chặn failure</th></tr>
+  <tr><td>Read trước Edit (bản đọc bị cắt không tính; <code>cat</code>/<code>sed -n</code>/<code>grep</code> một file, không pipe, thì được tính)</td><td>Sửa theo nội dung đoán hoặc đã cũ</td></tr>
+  <tr><td><code>old_string</code> khớp chính xác, kể cả khoảng trắng</td><td>Sửa nhầm chỗ gần giống</td></tr>
+  <tr><td>Khớp đúng 1 lần, nếu không thì thêm context hoặc <code>replace_all</code></td><td>Sửa nhầm lần xuất hiện khác</td></tr>
+</table>
+<p>Nguồn: <a href="https://code.claude.com/docs/en/tools-reference">Tools reference</a>, <a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/text-editor-tool">Text editor tool</a>.</p>
+
+<h2>Định dạng edit: trade-off</h2>
+<table>
+  <tr><th>Định dạng</th><th>Ưu</th><th>Nhược</th></tr>
+  <tr><td>Viết lại cả file</td><td>Đơn giản nhất</td><td>Output token ~ kích thước file; chậm; model hay "lười" bỏ bớt code</td></tr>
+  <tr><td>Diff có số dòng</td><td>Gọn</td><td>Model rất kém với số dòng (Aider)</td></tr>
+  <tr><td><code>str_replace</code> / SEARCH-REPLACE</td><td>Gọn, neo bằng nội dung, độ tin cậy cao nhất (Anthropic)</td><td>Phải khớp chính xác và duy nhất</td></tr>
+  <tr><td><code>apply_patch</code> (OpenAI V4A)</td><td>Không số dòng, 3 dòng context, anchor <code>@@</code></td><td>Định dạng riêng, cần parser</td></tr>
+</table>
+
+<h2>Checklist: harness tối thiểu thiếu gì</h2>
+<ul>
+  <li>Giới hạn số lượt, budget, nút ngắt.</li>
+  <li>Lỗi parse và tool lạ phải <strong>trả về cho model</strong>, không nuốt im lặng, không crash.</li>
+  <li>Message lỗi của tool phải chỉ cách sửa.</li>
+  <li>Có tool verify (bash); có quyền và sandbox cho thao tác ghi.</li>
+  <li>Compaction khi context dài.</li>
+</ul>
+
+<h2>Đọc trace Claude Code</h2>
+<pre><code>F=$(ls -t ~/.claude/projects/&lt;repo&gt;/*.jsonl | head -1)
+# đếm tool
+jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name' "$F" | sort | uniq -c | sort -rn
+# tool_result lỗi
+jq -r 'select(.type=="user") | .message.content[]? | select(.type=="tool_result" and .is_error==true) | (.content|tostring|.[0:160])' "$F"</code></pre>
+
+</main>
+</body>
+</html>

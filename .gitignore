@@ -1,0 +1,25 @@
+.omc/
+.DS_Store
+
+# Toàn bộ output do skill sinh ra nằm trong output/.
+# Mặc định VẪN commit (brainstorms, reports, research là tài sản tích lũy,
+# và memory/ trỏ tới chúng). Chỉ ignore hai nhóm dưới đây.
+
+# Dữ liệu cá nhân ứng viên — không bao giờ đưa lên git
+output/cv/
+output/mock-interviews/
+
+# Báo cáo review chứa trích đoạn code banking — không đưa lên git
+output/reviews/
+
+# Bản nháp tạm (dịch, polish) — sinh lại được, không cần lịch sử
+output/drafts/*
+!output/drafts/.gitkeep
+
+# Workspace eval của skill-creator (snapshot + report + grading) — sinh lại được.
+# Chỉ giữ fixtures/ (input cố định cho evals.json của skill).
+output/skill-evals/*/*
+!output/skill-evals/*/fixtures/
+
+# Cấu hình Obsidian cục bộ (workspace state theo máy)
+.obsidian/

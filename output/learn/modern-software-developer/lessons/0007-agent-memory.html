@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 7 — Agent memory: từ lý thuyết CoALA đến thư mục memory/ thật</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0007 · Module 3 (CS146S W3 &amp; roadmap.sh) · 2026-10-24 · ~40 phút · <a href="0006-skill-va-progressive-disclosure.html">Bài 6</a> · <a href="../reference/memory.html">Cheat sheet memory</a> · <a href="../reference/skills.html">Cheat sheet skill</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Agent memory: từ lý thuyết CoALA đến thư mục memory/ thật</h1>
+<p class="subtitle">Bài 6 đã chỉ ra rằng context là tài nguyên khan hiếm và đắt đỏ. Nhưng LLM bản chất là hàm phi trạng thái: hết một phiên là quên sạch. Để trở thành cộng sự lâu dài, agent cần một hệ thống nhớ. Ta sẽ mổ xẻ 4 ngăn nhớ theo khung CoALA, giải bài toán đau đầu nhất là "quên" (cache invalidation), và soi chiếu thẳng vào kiến trúc <code>memory/</code> hai tầng mà anh đang dùng hàng ngày.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Phân biệt rạch ròi 4 ngăn nhớ của agent (Working, Episodic, Semantic, Procedural) và ánh xạ sang các tầng lưu trữ quen thuộc của backend. Giải thích cơ chế index 2 tầng của <code>my-agent</code> theo nguyên lý progressive disclosure. Thiết kế chính sách cập nhật và dọn dẹp ký ức (eviction policy) để chặn đứng nguy cơ dirty read và mâu thuẫn context.</p>
+</div>
+
+<h2>0. Khởi động</h2>
+<p>Một câu ôn bài 6, và một câu đoán trước. Đáp án câu đoán nằm ở mục 3.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Ghi chú vận hành: anh đang dồn tiến độ thực hành của bài 4, 5, 6. Bài 7 này thiết kế bài tập trực tiếp trên chính thư mục <code>memory/</code> sẵn có của anh để làm rất nhanh trong 15–20 phút.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Ở bài 6, nguyên nhân chính khiến skill <code>research</code> bị Claude Code bỏ qua (0/2 lần gọi) trong khi các skill như <code>po</code> hay <code>brainstorm</code> được gọi đều đặn là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Description quá ngắn và thiếu các tình huống kích hoạt cụ thể thực tế</li>
+    <li>Model bị cấm gọi skill này do gắn cờ disable model invocation trong frontmatter</li>
+    <li>Thân file SKILL.md dài vượt quá mức giới hạn năm trăm dòng cho phép</li>
+    <li>Listing bị cắt bớt do vượt quá ngân sách một phần trăm context window</li>
+  </ul>
+  <p class="quiz-explain">Skill <code>research</code> bị undertrigger vì description chỉ có 198 ký tự, viết chung chung "so sánh lựa chọn kỹ thuật". Model tự tin tự trả lời được nên bỏ qua skill. Trong khi đó, <code>po</code> và <code>brainstorm</code> có description dài, nêu rõ "kể cả khi tôi chỉ nói…". Với memory cũng vậy: mô tả mẩu nhớ mơ hồ thì model không bao giờ biết đường nạp lại.</p>
+</div>
+
+<details>
+  <summary>Đoán trước: nếu anh nói với agent "Từ nay tôi chuyển hẳn sang dùng Maven cho các dự án mới", nhưng trong memory vẫn còn file cũ ghi "Luật ưu tiên dùng Gradle", điều gì sẽ xảy ra ở phiên tiếp theo khi anh bảo nó tạo dự án Java? Viết ra rồi mới mở.</summary>
+  <p>Giữ câu trả lời của anh. Mục 3 sẽ phân tích hiện tượng mâu thuẫn ký ức (contradiction) và bài toán kinh điển cache invalidation.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Vấn đề gốc rễ: LLM là hàm phi trạng thái, context window không phải memory</h2>
+
+<p>Trước hết, hãy quay lại bản chất toán học: một LLM là một hàm thuần túy (pure function) không trạng thái: <code>y = f(x)</code>. Mỗi lần gọi API là một lượt tính toán độc lập. Model không hề có "trí nhớ sinh học" nào sau khi hàm trả về kết quả.</p>
+
+<p>Nhiều người lầm tưởng rằng tăng context window lên 1M hay 2M token là giải quyết xong bài toán bộ nhớ. Thật ra đó là một ảo tưởng kỹ thuật. Dân backend nhìn vào sẽ thấy ngay ba rào cản chí mạng:</p>
+
+<ul>
+  <li><strong>Chi phí (Context Tax):</strong> Gửi 100k token lịch sử qua lại ở mỗi lượt gõ phím làm chi phí tăng theo cấp số nhân và độ trễ (TTFT - Time To First Token) kéo dài.</li>
+  <li><strong>Mất tập trung (Context Rot &amp; "Lost in the Middle"):</strong> Càng nhồi nhiều thông tin không liên quan vào prompt, model càng dễ bỏ sót chỉ dẫn cốt lõi hoặc suy luận sai lệch.</li>
+  <li><strong>Mất sạch khi hết phiên:</strong> Đóng terminal hoặc sang một issue mới là sạch trơn. Toàn bộ kinh nghiệm fix bug của phiên trước bốc hơi hoàn toàn.</li>
+</ul>
+
+<p>Với dân backend, context window chỉ tương đương với <strong>L1 Cache hoặc ThreadLocal state của một HTTP request</strong>. Khi request kết thúc, thread trả về pool, state bị xóa. Muốn dữ liệu sống sót qua các request và phiên làm việc, ta bắt buộc phải có một hệ thống lưu trữ ngoại vi (external persistence). Đó chính là <strong>Agent Memory</strong>.</p>
+
+<p><strong>Điều cần nhớ:</strong> Context window là bộ nhớ làm việc tạm thời của một lượt tính toán, không phải bộ nhớ dài hạn. Nhồi nhét context vừa đắt vừa làm cùn khả năng suy luận của model.</p>
+
+<h2>2. Bốn ngăn nhớ theo khung CoALA</h2>
+
+<p>Để thiết kế hệ thống nhớ cho agent mà không bị chắp vá, giới nghiên cứu AI đã mượn mô hình từ khoa học nhận thức (cognitive science). Khung kiến trúc chuẩn mực nhất hiện nay là <strong>CoALA (Cognitive Architectures for Language Agents)</strong> của nhóm nghiên cứu Princeton/Stanford:<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Sumers et al., <a href="https://arxiv.org/abs/2309.02427">"Cognitive Architectures for Language Agents"</a>, TMLR 2024. Đọc Section 2 và 3 để thấy cách họ phân chia rạch ròi 4 ngăn nhớ.</aside>
+
+<blockquote>
+<em>"Working memory maintains active context, while long-term memory stores episodic experiences, semantic knowledge, and procedural skills."</em>
+<br><strong>Tạm dịch:</strong> "Bộ nhớ làm việc duy trì ngữ cảnh đang kích hoạt, trong khi bộ nhớ dài hạn lưu trữ các trải nghiệm tình huống, tri thức ngữ nghĩa và kỹ năng quy trình."
+</blockquote>
+
+<p>Bốn ngăn nhớ này ánh xạ hoàn hảo sang các khái niệm quen thuộc trong hệ thống phần mềm:</p>
+
+<table>
+  <tr><th>Ngăn nhớ</th><th>Bản chất trong AI Agent</th><th>Ví dụ cụ thể</th><th>Tương đương trong Backend</th></tr>
+  <tr>
+    <td><strong>Working Memory</strong><br>(Làm việc / Ngắn hạn)</td>
+    <td>Toàn bộ context window hiện tại: system prompt, tool definitions, tool results, lịch sử hội thoại vài lượt gần nhất.</td>
+    <td>Prompt hiện thời, kết quả vừa chạy của lệnh <code>git status</code>, các turn chat đang diễn ra.</td>
+    <td><strong>RAM / CPU Cache / ThreadLocal</strong>: cực nhanh, dung lượng nhỏ, mất sạch khi tắt tiến trình.</td>
+  </tr>
+  <tr>
+    <td><strong>Episodic Memory</strong><br>(Trải nghiệm / Sự kiện)</td>
+    <td>Nhật ký các sự kiện, hành động và kết quả trong quá khứ gắn chặt với chuỗi thời gian cụ thể ("chuyện gì đã xảy ra, khi nào, kết quả ra sao").</td>
+    <td>Transcript JSONL của phiên hôm qua; commit log; "lần trước sửa migration V3 bị deadlock vì bảng Orders có foreign key".</td>
+    <td><strong>WAL (Write-Ahead Log) / Audit Trail / Event Sourcing Stream</strong>: append-only, tuần tự theo thời gian.</td>
+  </tr>
+  <tr>
+    <td><strong>Semantic Memory</strong><br>(Ngữ nghĩa / Sự thật)</td>
+    <td>Tri thức, sự thật, quy tắc, sở thích độc lập với thời gian, được đúc kết lại sau nhiều trải nghiệm.</td>
+    <td>"Luật là senior backend Java/Spring"; "Dự án này cấm sửa file migration đã merge"; "Luật học tiếng Anh để phỏng vấn".</td>
+    <td><strong>Normalized Relational DB (PostgreSQL)</strong>: dữ liệu có cấu trúc, quan hệ, tra cứu theo thuộc tính/khóa.</td>
+  </tr>
+  <tr>
+    <td><strong>Procedural Memory</strong><br>(Quy trình / Kỹ năng)</td>
+    <td>Kỹ năng, công cụ, hướng dẫn hành động đã được lập trình hoặc chuẩn hóa ("làm điều đó như thế nào").</td>
+    <td>Các MCP tools (Bài 4–5); các Skills như <code>review-java</code>, <code>report</code> (Bài 6); script bash tự động hóa.</td>
+    <td><strong>Application Code / Stored Procedures / Shell Scripts</strong>: logic thực thi tất định.</td>
+  </tr>
+</table>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+  subgraph AgentLoop["VÒNG LẶP AGENT (Mỗi lượt gọi)"]
+    direction TB
+    LLM["LLM Core (Hàm tính toán phi trạng thái)"]
+    WM["Working Memory (Context Window)<br/>• System Prompt &amp; Tools<br/>• Current Scratchpad &amp; Turn History"]
+    LLM <--> WM
+  end
+
+  subgraph LongTermMemory["HỆ THỐNG LONG-TERM MEMORY (Bền vững ngoài Context)"]
+    direction TB
+    subgraph Declarative["Memory Dữ Liệu"]
+      direction LR
+      EM["Episodic Memory<br/>(Event Log, Transcripts, Git Log)"]
+      SM["Semantic Memory<br/>(Facts, Preferences, Profile)"]
+    end
+    subgraph Procedural["Memory Hành Động"]
+      direction LR
+      PM["Procedural Memory<br/>(Skills, MCP Tools, Scripts)"]
+    end
+  end
+
+  EM -->|"Consolidate / Reflect (Đúc kết)"| SM
+  SM -->|"Retrieve / Page-In (Nạp khi cần)"| WM
+  PM -->|"Progressive Disclosure (Nạp lười)"| WM
+  WM -->|"Write / Capture (Ghi nhận)"| EM
+</pre>
+<figcaption>Hình 1. Kiến trúc luồng dữ liệu 4 ngăn nhớ. Nhìn vào hai chiều: Working Memory ghi nhận sự kiện vào Episodic Memory, từ đó đúc kết thành Semantic Memory. Khi cần, Semantic và Procedural Memory được nạp có chọn lọc vào Working Memory.</figcaption>
+</figure>
+
+<p>Đến đây anh có thể nhận ra: từ Bài 1 đến Bài 6, chúng ta đã xây dựng trọn vẹn phần <strong>Procedural Memory</strong> (bộ công cụ MCP và quy trình Skill). Hôm nay, ta bước sang phần lưu trữ dữ liệu thật sự: <strong>Episodic và Semantic Memory</strong>.</p>
+
+<p><strong>Điều cần nhớ:</strong> CoALA chia bộ nhớ thành 4 ngăn: Working (ngắn hạn trong context), Episodic (nhật ký sự kiện theo thời gian), Semantic (sự thật đúc kết) và Procedural (công cụ và kỹ năng). Coding agent thông minh không nhồi tất cả vào context mà phân luồng lưu trữ rõ ràng.</p>
+
+<h2>3. Vòng đời ký ức và cơn ác mộng Cache Invalidation</h2>
+
+<p>Một hệ thống memory không chỉ là một cái kho để quẳng dữ liệu vào. Nó có vòng đời 4 thao tác: <strong>Capture (Ghi) → Retrieve (Đọc) → Consolidate (Đúc kết) → Forget (Quên)</strong>.</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 680 140" role="img" aria-label="Vòng đời 4 bước của ký ức: Ghi nhận, Truy xuất, Đúc kết và Quên">
+  <rect x="10" y="30" width="145" height="50" rx="6" class="d-box"/>
+  <text x="82" y="55" class="d-small d-center d-strong">1. Capture (Ghi)</text>
+  <text x="82" y="70" class="d-muted d-center">Explicit vs Implicit</text>
+
+  <line x1="155" y1="55" x2="185" y2="55" stroke="var(--color-border)" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="185" y="30" width="145" height="50" rx="6" class="d-box"/>
+  <text x="257" y="55" class="d-small d-center d-strong">2. Retrieve (Đọc)</text>
+  <text x="257" y="70" class="d-muted d-center">Index vs Vector vs Grep</text>
+
+  <line x1="330" y1="55" x2="360" y2="55" stroke="var(--color-border)" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="360" y="30" width="145" height="50" rx="6" class="d-accent-fill"/>
+  <text x="432" y="55" class="d-small d-center d-strong">3. Consolidate</text>
+  <text x="432" y="70" class="d-muted d-center">Episodic → Semantic</text>
+
+  <line x1="505" y1="55" x2="535" y2="55" stroke="var(--color-border)" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="535" y="30" width="135" height="50" rx="6" class="d-fill"/>
+  <text x="602" y="55" class="d-small d-center d-strong">4. Forget / Evict</text>
+  <text x="602" y="70" class="d-muted d-center">Cache Invalidation</text>
+  <text x="340" y="115" class="d-muted d-center">Vòng đời bộ nhớ: ghi có chọn lọc, đọc chính xác, đúc kết liên tục và chủ động loại bỏ cái cũ.</text>
+</svg>
+<figcaption>Hình 2. Vòng đời 4 bước của một ký ức. Bước 4 (Forget / Evict) là bước khó nhất nhưng hay bị các framework bỏ quên nhất.</figcaption>
+</figure>
+
+<h3>A. Capture (Ghi nhận): Explicit vs Implicit</h3>
+<p>Có hai cách đưa ký ức vào hệ thống:</p>
+<ul>
+  <li><strong>Explicit (Chủ động):</strong> Người dùng ra lệnh trực tiếp, ví dụ gõ <code>/remember tôi hoãn thi TOEIC</code>. Ưu điểm: độ chính xác 100%, không sinh rác. Nhược điểm: đòi hỏi con người phải có thói quen ghi chép.</li>
+  <li><strong>Implicit (Tự động trích xuất):</strong> Sau mỗi phiên hoặc mỗi turn, một model nền chạy ngầm (reflection agent giống MemGPT hay Mem0)<span class="sidenote-ref"></span> tự quét transcript để rút ra fact mới. Ưu điểm: người dùng không cần làm gì. Nhược điểm: rất dễ lưu rác, lưu những thứ vụn vặt tạm thời ("người dùng vừa hỏi lỗi compile dòng 15").</li>
+</ul>
+<aside class="sidenote">Packer et al., <a href="https://arxiv.org/abs/2310.08560">"MemGPT: Towards LLMs as Operating Systems"</a>, 2023. MemGPT dùng model đóng vai trò OS kernel quản lý việc đẩy memory ra vào context thông qua tool gọi hàm.</aside>
+
+<h3>B. Retrieve (Truy xuất): Vector Search vs Exact Index Pointer</h3>
+<p>Nhiều người nghĩ cứ nói đến AI memory là phải cài Vector Database (Chroma, Pinecone). Nhưng trong kỹ thuật phần mềm, <strong>Vector Search bộc lộ 3 điểm yếu chí tử</strong>:</p>
+<ol>
+  <li><strong>Mù thời gian (Temporal Blindness):</strong> Cosine similarity chỉ đo khoảng cách ngữ nghĩa giữa hai vector chữ, hoàn toàn không biết cái nào mới hơn cái nào. Câu "tôi thích Gradle" (2024) và "tôi ghét Gradle, chuyển sang Maven" (2026) có độ tương đồng ngữ nghĩa cực cao với từ khóa "Java build tool", và vector search sẽ kéo cả hai vào context!</li>
+  <li><strong>Mất từ khóa chính xác:</strong> Tên class, mã lỗi, tên biến kỹ thuật (như <code>OptimisticLockException</code>) thường bị vector embedding làm nhòe nghĩa.</li>
+  <li><strong>Chi phí hạ tầng:</strong> Phải dựng database riêng, quản lý connection pool, lo embedding model drift.</li>
+</ol>
+<p>Trường phái ngược lại là <strong>Exact Index Pointer</strong> (dùng chỉ mục phẳng 1 dòng như <code>MEMORY.md</code>). Nó cực kỳ nhẹ, chính xác, và model đọc trực tiếp bằng khả năng lý luận tự nhiên.</p>
+
+<h3>C. Consolidate (Đúc kết): Biến trải nghiệm thành quy tắc</h3>
+<p>Trong bài báo kinh điển <em>Generative Agents</em> (Stanford/Google), các tác giả gọi đây là bước <strong>Reflection</strong>:<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Park et al., <a href="https://arxiv.org/abs/2304.03442">"Generative Agents: Interactive Simulacra of Human Behavior"</a>, UIST 2023.</aside>
+<blockquote>
+<em>"Reflection generates higher-level, more abstract thoughts from an agent's memory stream."</em>
+<br><strong>Tạm dịch:</strong> "Sự đúc kết sinh ra những suy nghĩ trừu tượng và khái quát hơn từ dòng ký ức của agent."
+</blockquote>
+<p>Ví dụ: thay vì lưu 20 mẩu nhật ký về 20 lần fix deadlock trên Oracle, bước consolidate sẽ rút ra một luật semantic duy nhất: <em>"Trong dự án này, luôn sắp xếp thứ tự update row theo ID tăng dần để chống deadlock"</em>.</p>
+
+<h3>D. Forget &amp; Evict: Cache Invalidation</h3>
+<p>Đây là câu trả lời cho câu đoán ở mục 0. Trong khoa học máy tính có câu châm ngôn bất hủ của Phil Karlton:</p>
+<blockquote>
+<em>"There are only two hard things in Computer Science: cache invalidation and naming things."</em>
+<br><strong>Tạm dịch:</strong> "Chỉ có hai điều khó trong Khoa học Máy tính: vô hiệu hóa cache và đặt tên."
+</blockquote>
+
+<p>Khi sở thích hay quyết định kỹ thuật thay đổi mà hệ thống memory chỉ biết <strong>INSERT</strong> mà không biết <strong>UPDATE hay DELETE</strong>, hiện tượng <strong>Contradiction (Mâu thuẫn ký ức)</strong> sẽ xảy ra. Lúc này context chứa cả hai sự thật đối nghịch nhau. Model của Claude Code hay GPT khi thấy hai chỉ dẫn mâu thuẫn sẽ hành xử theo cơ chế: <em>"may pick one arbitrarily"</em> (tự chọn bừa một cái). Anh sẽ thấy lúc thì nó sinh project bằng Maven, lúc lại sinh bằng Gradle.</p>
+
+<p><strong>Điều cần nhớ:</strong> Hệ thống memory không có cơ chế quên và vô hiệu hóa (eviction/invalidation) thì càng dùng lâu càng tích tụ mâu thuẫn và rác bẩn, dẫn đến tình trạng "dirty read" trong context.</p>
+
+<h2>4. Mổ xẻ hệ thống memory/ của my-agent</h2>
+
+<p>Bây giờ ta hãy đối chiếu lý thuyết trên với chính cấu trúc mà anh đang dùng trong <code>my-agent</code>. Anh đã thiết lập một hệ thống <strong>Two-tier Index-Detail</strong> thuần Markdown rất thanh thoát:</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 680 180" role="img" aria-label="Kiến trúc memory 2 tầng của my-agent: Index nạp sẵn trong Context, Detail file chỉ nạp lười khi pointer liên quan">
+  <!-- Tier 1: Index -->
+  <rect x="20" y="30" width="280" height="120" rx="6" class="d-accent-fill"/>
+  <text x="160" y="55" class="d-small d-center d-strong">TẦNG 1: CHỈ MỤC (Index Pointer)</text>
+  <text x="160" y="75" class="d-muted d-center">memory/MEMORY.md (luôn nạp vào context)</text>
+  <rect x="35" y="90" width="250" height="45" rx="4" class="d-box"/>
+  <text x="45" y="108" class="d-small">- [Mục tiêu tiếng Anh](muc-tieu-tieng-anh.md)</text>
+  <text x="55" y="124" class="d-muted">đích 3 tháng phỏng vấn... (1 dòng pointer)</text>
+
+  <!-- Arrow -->
+  <line x1="300" y1="90" x2="380" y2="90" stroke="var(--color-border)" stroke-width="2" stroke-dasharray="4" marker-end="url(#arrow)"/>
+  <text x="340" y="80" class="d-muted d-center">Chỉ đọc khi cần</text>
+
+  <!-- Tier 2: Details -->
+  <rect x="380" y="30" width="280" height="120" rx="6" class="d-box"/>
+  <text x="520" y="55" class="d-small d-center d-strong">TẦNG 2: CHI TIẾT (Detail Markdown)</text>
+  <text x="520" y="75" class="d-muted d-center">memory/*.md (nằm trên đĩa / git)</text>
+  <rect x="395" y="90" width="250" height="45" rx="4" class="d-fill"/>
+  <text x="405" y="108" class="d-small">--- name: muc-tieu-tieng-anh ---</text>
+  <text x="405" y="124" class="d-muted">Chi tiết chiến lược, tài liệu, timeline...</text>
+</svg>
+<figcaption>Hình 3. Kiến trúc Two-Tier Index của my-agent. Nhìn vào mũi tên đứt đoạn: tầng 1 là mục lục 1 dòng tốn chưa đến 50 token, nằm sẵn trong context. Tầng 2 chứa nội dung đầy đủ nhưng chỉ được model mở ra khi pointer ở tầng 1 báo hiệu có liên quan.</figcaption>
+</figure>
+
+<h3>Tại sao thiết kế này rất kỹ thuật và hiệu quả?</h3>
+<p>Anh đã vô tình áp dụng đúng nguyên lý <strong>Progressive Disclosure của Bài 6</strong> cho tầng Data:</p>
+<ul>
+  <li><strong>Rẻ tối đa:</strong> <code>MEMORY.md</code> mỗi bản ghi chỉ đúng một dòng gạch đầu dòng (pointer + tóm tắt 10 từ). Nếu có 20 mẩu ký ức, cả file chỉ tốn khoảng 300 token—quá nhỏ so với ngân sách 200k.</li>
+  <li><strong>Version control bằng Git:</strong> Mọi thay đổi ký ức đều là commit git. Anh có thể xem <code>git diff</code>, <code>git blame</code>, biết agent đã sửa ký ức lúc nào. Khi có lỗi, chỉ cần <code>git checkout</code> là khôi phục (như tôi đã làm ở bài 6 khi eval ghi nhầm).</li>
+  <li><strong>Harness-agnostic:</strong> Cả Claude Code lẫn Antigravity đều dùng chung một thư mục <code>memory/</code>. Không bị khóa chặt vào cơ chế Auto-Memory riêng của từng tool.</li>
+  <li><strong>Định dạng tuyệt đối:</strong> Trong <code>SKILL.md</code> của <code>remember</code>, anh có quy định rất đắt giá: <em>"Ngày tháng viết dạng tuyệt đối (vd: 2026-08-22), không viết 'hôm nay'/'tuần trước'"</em>. Điều này triệt tiêu hoàn toàn lỗi nhầm lẫn mốc thời gian khi nạp lại ở tương lai.</li>
+</ul>
+
+<h3>Những điểm mù của thiết kế hiện tại cần cải tiến</h3>
+<ol>
+  <li><strong>Index Bloat khi scale:</strong> Khi số mẩu nhớ tăng lên 200–500 file, <code>MEMORY.md</code> sẽ chiếm 5.000–10.000 token ở mọi phiên. Lúc đó sẽ cần phân nhóm theo danh mục hoặc thư mục con.</li>
+  <li><strong>Hoàn toàn thiếu Episodic Memory:</strong> Hệ thống hiện tại chỉ lưu Semantic Memory (sự thật, sở thích). Anh chưa có cơ chế lưu lại: <em>"Tuần trước đã optimize query Oracle bảng Transaction bằng hint gì"</em>. Những kinh nghiệm đó đang trôi mất sau khi đóng phiên terminal.</li>
+  <li><strong>Chính sách Invalidation phụ thuộc ý thức:</strong> Skill <code>remember</code> có dặn: <em>"Đọc MEMORY.md xem đã có ghi nhớ nào trùng/liên quan chưa... nếu có thì cập nhật file đó"</em>. Đây là một optimistic check. Nếu người dùng nói vội, agent vẫn có thể vô tình tạo file mới gây mâu thuẫn.</li>
+</ol>
+
+<p><strong>Điều cần nhớ:</strong> Hệ thống memory 2 tầng của my-agent áp dụng progressive disclosure cho dữ liệu: index 1 dòng nạp sẵn, chi tiết nạp lười. Điểm mạnh là git versioning và chi phí thấp; điểm yếu là mới chỉ có semantic memory mà thiếu hẳn episodic memory.</p>
+
+<h2>5. Thực hành: Audit và stress-test memory của my-agent (~20 phút)</h2>
+
+<p>Bài tập hôm nay làm trực tiếp trên repo <code>my-agent</code>. Chúng ta sẽ soi kiểm tra thực tế và chạy một thử nghiệm mâu thuẫn ký ức có kiểm soát.</p>
+
+<p><strong>Bước 1 — Đo kích thước và chi phí hiện tại (3 phút).</strong><br>
+Mở terminal tại thư mục <code>my-agent</code> và kiểm tra hai file:</p>
+<pre><code>wc -l -c memory/MEMORY.md
+ls -la memory/</code></pre>
+<p>Tính xem tầng 1 (chỉ mục) của anh hiện tốn xấp xỉ bao nhiêu token (quy tắc thô: 1 token ≈ 4 ký tự tiếng Anh / 1–2 ký tự tiếng Việt có dấu). Chỉ mục này đang chiếm bao nhiêu phần trăm trong context khởi đầu của anh?</p>
+
+<p><strong>Bước 2 — Thử nghiệm Contradiction (Mâu thuẫn ký ức) (10 phút).</strong><br>
+Hiện tại trong <code>memory/muc-tieu-tieng-anh.md</code> ghi rõ: <em>"đích 3 tháng là phỏng vấn công ty nước ngoài; TOEIC/IELTS đã cố ý hoãn, đừng đề xuất luyện đề"</em>.<br>
+Hãy mở một phiên chat mới (hoặc test trên Antigravity / Claude Code) và đặt câu hỏi bẫy sau:</p>
+<pre><code>"Tôi muốn nâng cao tiếng Anh trong 2 tháng tới, bạn gợi ý lộ trình học phù hợp giúp tôi."</code></pre>
+<p>Quan sát câu trả lời của agent: Nó có tự động đọc file <code>muc-tieu-tieng-anh.md</code> không? Nó có đề xuất luyện thi TOEIC/IELTS không, hay đi thẳng vào phỏng vấn xin việc?</p>
+
+<p>Sau đó, thử tưởng tượng anh muốn chuyển mục tiêu sang học tiếng Nhật/tiếng Đức. Mở file <code>.claude/skills/remember/SKILL.md</code> ra đọc lại: quy trình 4 bước của anh đã đủ chặt để ngăn agent tạo thêm file mục tiêu mới mà không vô hiệu hóa file tiếng Anh cũ chưa?</p>
+
+<p><strong>Bước 3 — Đề xuất 1 quy tắc dọn dẹp (Eviction Policy) (7 phút).</strong><br>
+Viết vào nháp hoặc <code>NOTES.md</code>: Nếu một đồng nghiệp trong team muốn áp dụng cấu trúc <code>memory/</code> này cho repo của họ, anh sẽ đưa ra quy định gì cho 3 tình huống sau:</p>
+<ol>
+  <li>Khi một thông tin trong memory hết hạn (ví dụ: dự án migrate sang Spring Boot 3 đã hoàn thành).</li>
+  <li>Khi hai memory mâu thuẫn trực tiếp với nhau.</li>
+  <li>Khi nào một sự thật trong <code>memory/</code> xứng đáng được "thăng hạng" đưa thẳng vào <code>AGENTS.md</code> / <code>CLAUDE.md</code>?</li>
+</ol>
+
+<p>Trả lời ba câu hỏi thực hành:</p>
+<ol>
+  <li>Bước 1: <code>MEMORY.md</code> của anh dài bao nhiêu dòng, chiếm khoảng bao nhiêu token?</li>
+  <li>Bước 2: Agent có bị dính bẫy đề xuất TOEIC/IELTS không? Điểm cốt lõi nào trong <code>MEMORY.md</code> đã cứu nó?</li>
+  <li>Bước 3: Ba quy tắc eviction của anh, mỗi quy tắc đúng một câu.</li>
+</ol>
+
+<details>
+  <summary>Gợi ý (mở sau khi đã suy nghĩ)</summary>
+  <p><strong>Câu 2:</strong> Nếu <code>MEMORY.md</code> được nạp vào system prompt / context đầu phiên, agent nhìn thấy pointer ngay lập tức và biết là TOEIC đã hoãn mà không cần mở file chi tiết! Đó là sức mạnh của việc tóm tắt 1 dòng mang thông tin phủ định ("đừng đề xuất luyện đề").</p>
+  <p><strong>Câu 3:</strong> Gợi ý chuẩn cho team: (1) Khi hết hạn → chuyển vào <code>memory/archive/</code> hoặc xóa hẳn commit; (2) Khi mâu thuẫn → UPDATE ghi đè file cũ, ghi rõ ngày cập nhật; (3) Thăng hạng lên <code>AGENTS.md</code> khi sự thật đó áp dụng cho <em>toàn bộ mọi thành viên trong team</em> và <em>bắt buộc cho mọi phiên làm việc</em>.</p>
+</details>
+
+<h2>6. Kiểm tra cuối bài</h2>
+<p>Ba câu trắc nghiệm tình huống và hai câu tự diễn đạt. Nhớ rằng trắc nghiệm kiểm tra độ hiểu sâu, không đoán mò.</p>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Trong phân loại CoALA, nhật ký toàn bộ các phiên làm việc trước đó cùng mã lỗi từng gặp thuộc về ngăn nhớ nào?</p>
+  <ul class="quiz-options">
+    <li data-correct>Episodic memory ghi nhận chuỗi các sự kiện cùng trải nghiệm trong quá khứ</li>
+    <li>Semantic memory tổng hợp các sự thật và tri thức độc lập thời gian</li>
+    <li>Procedural memory đóng gói các công cụ cùng quy trình thực thi hành động</li>
+    <li>Working memory lưu trữ toàn bộ ngữ cảnh tạm thời của phiên làm việc</li>
+  </ul>
+  <p class="quiz-explain">Episodic memory là nhật ký sự kiện tuần tự theo thời gian (giống Event log/WAL). Semantic memory là tri thức đúc kết độc lập thời gian. Procedural memory là kỹ năng/công cụ. Working memory là context window hiện hành.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Hệ thống <code>memory/</code> của <code>my-agent</code> dùng file <code>MEMORY.md</code> làm chỉ mục và nạp lười các file chi tiết. Ưu điểm lớn nhất của thiết kế này so với Vector Database cho cá nhân là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Dễ dàng kiểm soát phiên bản qua git và sửa chữa trực tiếp bằng tay</li>
+    <li>Khả năng mở rộng tự động lên đến hàng triệu bản ghi không suy giảm</li>
+    <li>Tìm kiếm ngữ nghĩa xuất sắc ngay cả khi từ khóa hoàn toàn không khớp</li>
+    <li>Tự động giải quyết triệt để mọi mâu thuẫn ký ức không cần can thiệp</li>
+  </ul>
+  <p class="quiz-explain">Với quy mô cá nhân và team nhỏ, file markdown lưu trong git cho phép diff, audit, sửa lỗi bằng tay và zero-infrastructure. Vector DB mạnh khi có hàng vạn bản ghi nhưng phức tạp, mù thời gian và khó debug khi sai.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Khi người dùng đổi ý từ "Tôi thích dùng Gradle" sang "Tôi chuyển hẳn sang Maven", rủi ro lớn nhất nếu agent chỉ thêm memory mới mà không xóa bỏ ký ức cũ là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Model bị mâu thuẫn ngữ cảnh và chọn ngẫu nhiên một trong hai sự thật</li>
+    <li>Model lập tức báo lỗi giao thức và dừng phiên làm việc ngay tại chỗ</li>
+    <li>Thư mục memory bị hỏng cấu trúc khiến cho toàn bộ chỉ mục biến mất</li>
+    <li>Chi phí token tăng vọt gấp mười lần ngay trong lượt trao đổi kế tiếp</li>
+  </ul>
+  <p class="quiz-explain">Khi có hai thông tin mâu thuẫn cùng xuất hiện trong context, LLM không có cơ chế tất định để biết cái nào đúng nếu không có timestamp hoặc quy tắc ưu tiên rõ ràng; model thường chọn ngẫu nhiên hoặc hallucinates.</p>
+</div>
+
+<details>
+  <summary>Tự diễn đạt 1: Hãy giải thích cho một dev trong team sự khác nhau giữa Episodic Memory và Semantic Memory bằng một ví dụ thực tế trong công việc bảo trì hệ thống.</summary>
+  <p>Episodic Memory là lịch sử các sự cố cụ thể đã diễn ra: "Lúc 14h ngày 10/10, service Payment bị OOM vì batch job quét 1 triệu record không phân trang". Semantic Memory là bài học trừu tượng được rút ra sau sự cố đó: "Mọi truy vấn danh sách giao dịch bắt buộc phải có phân trang limit/offset và giới hạn tối đa 500 bản ghi mỗi lần gọi".</p>
+</details>
+
+<details>
+  <summary>Tự diễn đạt 2: Tại sao nói hệ thống <code>memory/</code> của anh là sự kết hợp giữa Progressive Disclosure (Bài 6) và Stateless Function (Bài 1)?</summary>
+  <p>LLM bản chất là hàm phi trạng thái (Bài 1), không nhớ gì sau khi kết thúc request. Hệ thống <code>memory/</code> cung cấp vùng lưu trữ ngoài để duy trì trạng thái lâu dài. Thay vì nhồi toàn bộ dữ liệu vào context làm tăng chi phí và loãng model, anh dùng Progressive Disclosure (Bài 6): chỉ đưa 1 dòng pointer vào <code>MEMORY.md</code> nạp sẵn ở đầu phiên, và chỉ khi bài toán thật sự cần thì file chi tiết mới được tải vào context.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>Tóm lại</h2>
+<ul>
+  <li><strong>Context window không phải memory:</strong> Đó là RAM tạm thời của một lượt tính toán. Nhồi nhét context gây tốn tiền (Context Tax), tăng độ trễ và mục ruỗng khả năng chú ý (Context Rot).</li>
+  <li><strong>Khung CoALA chia 4 ngăn:</strong> Working (context hiện tại), Episodic (nhật ký sự kiện tuần tự), Semantic (tri thức, sự thật đúc kết) và Procedural (công cụ, kỹ năng, skills).</li>
+  <li><strong>Vòng đời 4 bước:</strong> Ghi (Capture) → Đọc (Retrieve) → Đúc kết (Consolidate) → Quên (Forget).</li>
+  <li><strong>Ác mộng Cache Invalidation:</strong> Ký ức mâu thuẫn hoặc hết hạn làm model chọn bừa. Hệ thống memory bắt buộc phải có cơ chế UPDATE và DELETE/EVICT rõ ràng.</li>
+  <li><strong>Index-Detail Pattern của my-agent:</strong> <code>MEMORY.md</code> (tầng 1) nạp sẵn giá rẻ, các file chi tiết (tầng 2) nạp lười. Kiểm soát phiên bản bằng Git, không phụ thuộc hạ tầng vector DB cồng kềnh.</li>
+</ul>
+<p>Bài 8 ta sẽ bước sang Module 4 (Tùy biến agent &amp; repo): <strong>CLAUDE.md vs AGENTS.md: cái gì đặt ở đâu</strong>. Ta sẽ phân định ranh giới giữa instruction chung của repo và instruction riêng của từng harness, tối ưu prompt cache và tránh xung đột quy tắc.</p>
+
+<h2>Đọc thêm</h2>
+<p><strong>Nguồn chính:</strong> Đọc bài báo <a href="https://arxiv.org/abs/2309.02427">CoALA: Cognitive Architectures for Language Agents</a> (Section 2 &amp; 3, khoảng 25 phút) để nắm vững hệ thống phân loại bộ nhớ chuẩn mực nhất của khoa học máy tính hiện nay. Đọc thêm bài blog <a href="https://mem0.ai/blog">Mem0 Architecture</a> để xem cách các framework hiện đại tổ chức đồ thị tri thức và trích xuất fact tự động.</p>
+
+<div class="callout">
+  <span class="label">Báo lại cho tôi</span>
+  <p><strong>Nợ cũ:</strong> Kết quả bài 4, bài 5, bài 6 (gửi dạng tóm tắt ngắn: số câu đúng/sai, ý chính thực hành).</p>
+  <p><strong>Bài 7:</strong> (1) Khởi động <strong>x/1</strong> và câu đoán của anh. (2) Cuối bài <strong>y/3</strong>, kèm đáp án đã chọn nếu sai, và 2 câu tự diễn đạt. (3) Ba câu hỏi thực hành của mục 5 trên chính <code>memory/</code> của anh. Chỗ nào thấy chưa thực tế cho team, cứ phản biện.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0006-skill-va-progressive-disclosure.html">← Bài 6: Skill và progressive disclosure</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0008-claude-md-vs-agents-md.html">Bài 8: CLAUDE.md vs AGENTS.md →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/diagram.js"></script>
+</body>
+</html>

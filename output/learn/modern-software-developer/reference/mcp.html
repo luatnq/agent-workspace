@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — MCP</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · MCP · cập nhật 2026-10-07 (spec 2026-07-28) · <a href="../lessons/0004-mcp-host-client-server-transport.html">Bài 4</a> · <a href="reppit-va-spec.html">RePPIT</a> · <a href="glossary.html">Glossary</a></p>
+
+<h1>MCP</h1>
+<p class="subtitle">"JDBC cho context của agent": harness nói một giao thức, mỗi hệ thống ngoài cung cấp một server. Server là process riêng; người đọc API là model.</p>
+
+<h2>Ba vai</h2>
+<table>
+  <tr><th>Vai</th><th>Là gì</th><th>Ví dụ</th></tr>
+  <tr><td>Host</td><td>Ứng dụng AI, quản lý các client, giữ quyền quyết định</td><td>Claude Code</td></tr>
+  <tr><td>Client</td><td>Một kết nối bên trong host, <strong>1 client : 1 server</strong></td><td>—</td></tr>
+  <tr><td>Server</td><td>Chương trình cung cấp tools / resources / prompts</td><td><code>learn_server.py</code></td></tr>
+</table>
+<p>Hai tầng: <strong>data</strong> (JSON-RPC 2.0) và <strong>transport</strong> (stdio / Streamable HTTP). Nguồn: <a href="https://modelcontextprotocol.io/docs/learn/architecture">Architecture overview</a>.</p>
+
+<h2>Primitive</h2>
+<table>
+  <tr><th>Phía</th><th>Primitive</th><th>Ai quyết định</th><th>Method</th></tr>
+  <tr><td rowspan="3">Server</td><td>Tools</td><td>Model</td><td><code>tools/list</code>, <code>tools/call</code></td></tr>
+  <tr><td>Resources</td><td>Ứng dụng</td><td><code>resources/list</code>, <code>resources/read</code></td></tr>
+  <tr><td>Prompts</td><td>Người dùng</td><td><code>prompts/list</code>, <code>prompts/get</code></td></tr>
+  <tr><td>Client</td><td>Elicitation</td><td>Server hỏi người dùng qua client (cấm xin secret bằng form)</td><td>—</td></tr>
+</table>
+<p>Sampling, Roots, Logging: <strong>deprecated</strong> ở 2026-07-28. Tool annotations (<code>readOnlyHint</code>, <code>destructiveHint</code>…) chỉ là hint, client phải coi là không tin cậy nếu server không tin cậy.</p>
+
+<h2>Spec 2026-07-28: stateless</h2>
+<ul>
+  <li>Không còn <code>initialize</code> / <code>notifications/initialized</code>, không còn <code>Mcp-Session-Id</code>, không còn GET SSE stream.</li>
+  <li>Mỗi request mang <code>_meta</code>: <code>io.modelcontextprotocol/protocolVersion</code> + <code>io.modelcontextprotocol/clientCapabilities</code>.</li>
+  <li><code>server/discover</code>: server bắt buộc có, client gọi nếu muốn. Client hiện đại thử discover, không được thì lùi về <code>initialize</code> (server cũ).</li>
+  <li>Tool cần trạng thái: truyền handle tường minh trong tham số.</li>
+</ul>
+<p>Claude Code 2.1.292 (đo 2026-10-07): <code>server/discover</code> → <code>subscriptions/listen</code> → <code>prompts|resources|tools/list</code> → <code>tools/call</code>. Nguồn: <a href="https://modelcontextprotocol.io/specification/2026-07-28/changelog">changelog</a>.</p>
+
+<h2>Lỗi</h2>
+<table>
+  <tr><th>Loại</th><th>Hình dạng</th><th>Ai sửa</th></tr>
+  <tr><td>Protocol error</td><td>JSON-RPC <code>error</code> (vd. <code>-32602</code>)</td><td>Người viết client</td></tr>
+  <tr><td>Tool execution error</td><td><code>result.isError: true</code> + message</td><td>Model, nếu message chỉ cách sửa</td></tr>
+</table>
+<p>Python SDK 2.x: <code>raise ToolError(msg)</code> → model thấy <code>msg</code>. Exception khác → model chỉ thấy <code>Error executing tool &lt;name&gt;</code>.</p>
+
+<h2>Transport</h2>
+<table>
+  <tr><th></th><th>stdio</th><th>Streamable HTTP</th></tr>
+  <tr><td>Dùng khi</td><td>Tool cá nhân, process con</td><td>Tool dùng chung, service trên K8s</td></tr>
+  <tr><td>Credential</td><td>Env var</td><td>OAuth 2.1 (server = resource server)</td></tr>
+  <tr><td>Luật vàng</td><td>stdout chỉ chứa message MCP; log ra stderr</td><td>Validate <code>Origin</code>; local thì bind localhost</td></tr>
+</table>
+<p>HTTP+SSE (transport cũ): deprecated từ 2025-03-26, đừng dùng.</p>
+
+<h2>Claude Code</h2>
+<pre><code>claude mcp add &lt;name&gt; -- &lt;command&gt; [args...]          # stdio, scope local
+claude mcp add --transport http &lt;name&gt; &lt;url&gt;          # HTTP
+claude mcp add -s project ...                          # ghi .mcp.json (commit cho team)
+claude mcp list | get &lt;name&gt; | remove &lt;name&gt;
+/mcp                                                   # trong phiên: trạng thái, reconnect</code></pre>
+<ul>
+  <li>Tên tool: <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> (dùng trong permission rule, hook matcher).</li>
+  <li>Tool search mặc định bật: lúc đầu chỉ nạp tên tool; model gọi <code>ToolSearch</code> để lấy schema.</li>
+  <li>Output: cảnh báo &gt; 10k token, cắt ở 25k (<code>MAX_MCP_OUTPUT_TOKENS</code>).</li>
+  <li>Chọn server như chọn dependency: nó chạy với quyền của anh, output vào thẳng context.</li>
+</ul>
+<p>Nguồn: <a href="https://code.claude.com/docs/en/mcp">Claude Code — MCP</a>.</p>
+
+<h2>Server tối thiểu (Python SDK 2.x)</h2>
+<pre><code># /// script
+# requires-python = "&gt;=3.10"
+# dependencies = ["mcp&gt;=2,&lt;3"]
+# ///
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+
+mcp = MCPServer("demo")
+
+@mcp.tool()
+def add(a: int, b: int) -&gt; int:
+    """Add two numbers."""
+    return a + b
+
+if __name__ == "__main__":
+    mcp.run()   # stdio</code></pre>
+<p>Chạy: <code>uv run server.py</code>. Tutorial dùng <code>FastMCP</code> là bản 1.x (đã đổi tên ở 2.0, 2026-07-28). Java: <a href="https://github.com/modelcontextprotocol/java-sdk">Java SDK</a> (<code>io.modelcontextprotocol.sdk:mcp</code>), <a href="https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html">Spring AI starter</a> với <code>@McpTool</code>.</p>
+
+<h2>Test không cần agent</h2>
+<pre><code>M='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}'
+{ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{'"$M"'}}'; sleep 3; } \
+  | uv run -q server.py | jq -c .</code></pre>
+<p>Hoặc <a href="https://modelcontextprotocol.io/docs/tools/inspector">MCP Inspector</a>: <code>npx @modelcontextprotocol/inspector uv run server.py</code> (Node ≥ 22.19).</p>
+
+</main>
+</body>
+</html>

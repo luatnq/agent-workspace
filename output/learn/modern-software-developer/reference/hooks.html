@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Hooks (Lifecycle &amp; Guardrails)</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Hooks · cập nhật 2026-10-25 · <a href="../lessons/0009-hooks-lint-test-gate-guardrail.html">Bài 9</a> · <a href="instruction-files.html">Instruction files</a> · <a href="skills.html">Skill</a> · <a href="glossary.html">Glossary</a> · <a href="lo-trinh.html">Lộ trình</a></p>
+
+<h1>Lifecycle Hooks</h1>
+<p class="subtitle">Thực thi code tất định tại các điểm neo vòng lặp của agent: cưỡng chế quy tắc an toàn (guardrail) và tự động hóa kiểm thử (lint/test gate).</p>
+
+<h2>Instruction vs Hook</h2>
+<table>
+  <tr><th>Tiêu chí</th><th>Instruction (AGENTS.md / CLAUDE.md)</th><th>Hook (Lifecycle script)</th></tr>
+  <tr><td>Bản chất</td><td>Gợi ý ngữ cảnh (soft guideline) nạp vào prompt</td><td>Code thực thi tất định (hard constraint) do harness chạy</td></tr>
+  <tr><td>Cơ chế đảm bảo</td><td>Dựa vào khả năng suy luận xác suất của model</td><td>Dựa vào exit code của hệ điều hành (POSIX standard)</td></tr>
+  <tr><td>Nguy cơ</td><td>Có thể bị model quên hoặc bỏ qua khi context dài</td><td>Không thể vượt rào (bypass) nếu vi phạm</td></tr>
+  <tr><td>Chi phí token</td><td>Tốn token ở mọi lượt chat (nằm trong context)</td><td>Không tốn token trừ khi script in ra lỗi cần model sửa</td></tr>
+  <tr><td>Tương đương Backend</td><td>Comment trong code: <code>// Don't delete</code></td><td>Database Constraint / Servlet Filter / Interceptor</td></tr>
+</table>
+
+<h2>Các điểm neo vòng lặp (Lifecycle Events)</h2>
+<table>
+  <tr><th>Điểm neo</th><th>Thời điểm kích hoạt</th><th>Mục đích sử dụng chính</th></tr>
+  <tr>
+    <td><strong><code>PreToolUse</code></strong></td>
+    <td>Ngay trước khi tool thực thi trên đĩa</td>
+    <td><strong>Guardrail / Chốt an toàn:</strong> Chặn sửa migration database, chặn lệnh bash phá hoại, kiểm tra quyền truy cập.</td>
+  </tr>
+  <tr>
+    <td><strong><code>PostToolUse</code></strong></td>
+    <td>Ngay sau khi tool chạy xong</td>
+    <td><strong>Verification Gate:</strong> Chạy linter (Spotless), chạy nhanh unit test, biên dịch thử. Trả stderr cho model tự fix.</td>
+  </tr>
+  <tr>
+    <td><strong><code>PreInvocation</code></strong></td>
+    <td>Trước khi gửi prompt cho model</td>
+    <td>Kiểm tra môi trường, nạp bổ sung biến động nếu cần.</td>
+  </tr>
+  <tr>
+    <td><strong><code>PostInvocation</code></strong></td>
+    <td>Sau khi toàn bộ tool call của lượt hoàn tất</td>
+    <td>Ghi nhận log, audit số token, thông báo trạng thái.</td>
+  </tr>
+  <tr>
+    <td><strong><code>Stop</code></strong></td>
+    <td>Khi kết thúc phiên làm việc</td>
+    <td>Dọn dẹp tài nguyên tạm, đóng kết nối.</td>
+  </tr>
+</table>
+
+<h2>Giao thức điều khiển Exit Code</h2>
+<ul>
+  <li><strong>Exit Code <code>0</code>:</strong> Cho phép tiếp tục. Harness thực thi tool hoặc trả kết quả về cho model.</li>
+  <li><strong>Exit Code khác <code>0</code> (Exit 1 / 2):</strong>
+    <ul>
+      <li>Với <code>PreToolUse</code>: Tool bị <strong>hủy bỏ hoàn toàn (abort)</strong>, không ghi file.</li>
+      <li>Với <code>PostToolUse</code>: Bắt toàn bộ text in ra <code>stderr</code> đưa vào context ở turn kế tiếp làm thông báo lỗi để model tự sửa.</li>
+    </ul>
+  </li>
+</ul>
+
+<h2>Cấu hình trên các Harness</h2>
+
+<h3>1. Antigravity (<code>.agents/hooks.json</code>)</h3>
+<pre><code class="language-json">{
+  "guard-migration": {
+    "PreToolUse": [
+      {
+        "matcher": "replace_file_content",
+        "hooks": [
+          { "type": "command", "command": "./scripts/hooks/guard-migration.sh", "timeout": 5 }
+        ]
+      }
+    ]
+  },
+  "java-lint-gate": {
+    "PostToolUse": [
+      {
+        "matcher": "replace_file_content",
+        "hooks": [
+          { "type": "command", "command": "./scripts/hooks/check-java.sh", "timeout": 15 }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+
+<h3>2. Claude Code (<code>.claude/config.json</code>)</h3>
+<pre><code class="language-json">{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Edit", "command": "./scripts/hooks/guard-migration.sh" }
+    ],
+    "PostToolUse": [
+      { "matcher": "Edit", "command": "./scripts/hooks/check-java.sh" }
+    ]
+  }
+}</code></pre>
+
+<h2>Quy tắc vàng khi viết Hook</h2>
+<ol>
+  <li><strong>Chạy cực nhanh (&lt; 5 giây):</strong> Hook chạy đồng bộ giữa các lượt chat của agent. Đừng đưa full test suite vào hook. Chỉ chạy syntax check, linter hoặc unit test của file vừa sửa.</li>
+  <li><strong>Thông báo lỗi phải actionable:</strong> In ra <code>stderr</code> thông điệp rõ ràng, nêu đích danh lý do bị chặn và hướng dẫn model cách sửa (vd: "Hãy tạo file migration mới V...__xxx.sql").</li>
+  <li><strong>Tách logic ra script shell độc lập:</strong> Viết script trong <code>scripts/hooks/</code> để dùng chung cho mọi harness và dễ dàng test bằng tay trên terminal.</li>
+</ol>
+
+</main>
+</body>
+</html>

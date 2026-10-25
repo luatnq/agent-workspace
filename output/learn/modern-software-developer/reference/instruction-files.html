@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Instruction Files (AGENTS.md &amp; CLAUDE.md)</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Instruction Files · cập nhật 2026-10-25 · <a href="../lessons/0008-claude-md-vs-agents-md.html">Bài 8</a> · <a href="skills.html">Skill</a> · <a href="memory.html">Memory</a> · <a href="glossary.html">Glossary</a> · <a href="lo-trinh.html">Lộ trình</a></p>
+
+<h1>Instruction Files</h1>
+<p class="subtitle">Quy ước repo dành cho coding agent: mô hình Single Source of Truth, bảo vệ Prompt Caching, và chắt lọc quy ước thực sự tạo ra tác động.</p>
+
+<h2>Mô hình Single Source of Truth</h2>
+<ul>
+  <li><strong><code>AGENTS.md</code> (Root repository):</strong> Hợp đồng chung cho toàn bộ dự án và mọi coding agent (Claude Code, Antigravity, Cursor, Codex). Chứa lệnh build/test, non-standard conventions và ranh giới kiến trúc.</li>
+  <li><strong>Harness Adapters (<code>CLAUDE.md</code>, <code>GEMINI.md</code>, <code>.cursorrules</code>):</strong> File mỏng, chỉ import <code>@AGENTS.md</code> và chứa cấu hình điều phối agent / tool mapping đặc thù của harness đó. Không duplicate quy ước chung.</li>
+</ul>
+
+<h2>Nên đưa gì vào và tránh đưa gì vào</h2>
+<p class="small">Dựa trên kết quả định lượng từ nghiên cứu thực nghiệm <em>"Evaluating AGENTS.md"</em> (Gloaguen et al., 2026 trên SWE-bench):</p>
+<table>
+  <tr><th>Nên đưa vào (Tăng độ chính xác)</th><th>Tránh đưa vào (Lãng phí &gt;20% token, làm loãng context)</th></tr>
+  <tr>
+    <td><strong>Lệnh build &amp; test chính xác:</strong> Giúp agent chạy kiểm tra ngay mà không cần mò mẫm thử sai.</td>
+    <td><strong>Mô tả tổng quan kiến trúc repo:</strong> Agent có thể tự khám phá cấu trúc file qua <code>ls</code>, <code>find</code>, <code>grep</code> khi cần.</td>
+  </tr>
+  <tr>
+    <td><strong>Non-standard conventions:</strong> Các quy ước khác thường mà model không thể tự đoán từ pre-training (custom wrapper, quy tắc entity, thư viện cấm dùng).</td>
+    <td><strong>Kiến thức lập trình phổ thông:</strong> Dạy model "REST API là gì" hoặc các convention Java chuẩn đã có sẵn trong sách giáo khoa.</td>
+  </tr>
+  <tr>
+    <td><strong>Ranh giới cấm vi phạm:</strong> File migration database đã merge, schema protobuf dùng chung, branch production.</td>
+    <td><strong>Tài liệu README dài dòng:</strong> Nhồi nhét hàng nghìn dòng tài liệu nghiệp vụ biến context thành bãi rác.</td>
+  </tr>
+</table>
+
+<h2>Quy tắc bảo vệ Prompt Caching (Prefix Cache)</h2>
+<ul>
+  <li><strong>Giữ file tĩnh tuyệt đối:</strong> <code>AGENTS.md</code> nằm ở vị trí đầu tiên của prompt (prefix). Bất kỳ ký tự biến động nào (như ngày giờ, branch name, kết quả lệnh động) sẽ làm <strong>vỡ toàn bộ cache breakpoint</strong> ở các lượt sau, mất sạch 90% ưu đãi chi phí.</li>
+  <li><strong>Không sửa file theo việc ngắn hạn:</strong> Các ghi chú tạm thời theo ngày/giờ phải đưa vào prompt của user hoặc <code>memory/</code>.</li>
+  <li><strong>Giữ độ dài dưới 150 dòng:</strong> File càng ngắn, model càng tập trung cao độ và không bị rơi vào bẫy "Lost in the Middle".</li>
+</ul>
+
+<h2>Bảng phân định nơi đặt chỉ dẫn</h2>
+<table>
+  <tr><th>Nơi đặt</th><th>Tần suất nạp</th><th>Phạm vi</th><th>Mục đích</th></tr>
+  <tr><td><strong><code>AGENTS.md</code> (Root)</strong></td><td>Mọi phiên, mọi turn</td><td>Toàn team &amp; mọi agent</td><td>Quy ước chung, lệnh build/test, non-standard rules.</td></tr>
+  <tr><td><strong><code>Sub-AGENTS.md</code></strong></td><td>Chỉ khi thao tác trong thư mục</td><td>Module / Microservice</td><td>Quy ước kiến trúc riêng của service đó.</td></tr>
+  <tr><td><strong>Harness Adapter</strong></td><td>Mọi phiên của harness đó</td><td>Riêng harness</td><td>Import `@AGENTS.md` + mapping tool/subagent.</td></tr>
+  <tr><td><strong>Skill</strong></td><td>Chỉ nạp khi khớp description</td><td>Quy trình / Tác vụ</td><td>Checklist release, quy trình review code sâu, playbook.</td></tr>
+  <tr><td><strong>Hook</strong></td><td>Harness chạy trước/sau tool</td><td>Bắt buộc tất định</td><td>Chặn sửa migration, tự format code, lint gate.</td></tr>
+  <tr><td><strong>Memory</strong></td><td>Nạp lười qua index 1 dòng</td><td>Cá nhân kỹ sư</td><td>Sở thích cá nhân, mục tiêu ngắn hạn, bài học sự cố.</td></tr>
+</table>
+
+<h2>Checklist viết AGENTS.md chuẩn cho repo</h2>
+<ol>
+  <li>Độ dài dưới 150 dòng (tốt nhất là 50–100 dòng).</li>
+  <li>Có lệnh build và test cụ thể, chạy được ngay không cần đoán tham số.</li>
+  <li>Có ít nhất 2–3 quy ước khác thường (non-standard conventions) của dự án.</li>
+  <li>Nêu rõ các thư mục hoặc file cấm tự ý chỉnh sửa.</li>
+  <li>Không chứa bất kỳ nội dung nào thay đổi theo thời gian thực (giữ cache tĩnh).</li>
+</ol>
+
+</main>
+</body>
+</html>

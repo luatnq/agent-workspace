@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 10 — Subagent &amp; Multi-agent: planner / implementer / reviewer</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0010 · Module 4 (CS146S W4) · 2026-10-25 · ~45 phút · <a href="0009-hooks-lint-test-gate-guardrail.html">Bài 9</a> · <a href="../reference/subagents.html">Cheat sheet subagents</a> · <a href="../reference/hooks.html">Hooks</a> · <a href="../reference/instruction-files.html">Instruction files</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Subagent &amp; Multi-agent: planner / implementer / reviewer</h1>
+<p class="subtitle">Ở các bài trước, ta đã trang bị cho agent công cụ (MCP/Tool), kỹ năng nạp lười (Skills), bộ nhớ dài hạn (Memory), và chốt chặn cưỡng chế (Hooks). Nhưng khi đối mặt với một codebase quy mô hàng trăm nghìn dòng mã, một tác tử đơn lẻ ("God Agent") nhanh chóng bị nghẽn: context phình to, chi phí bùng nổ, và mô hình bắt đầu đãng trí. Hôm nay ta kết thúc Module 4 bằng kỹ thuật kiến trúc quan trọng nhất để mở rộng quy mô: <strong>Subagent &amp; Multi-agent</strong>.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Giải thích bản chất của Subagent dưới góc độ <strong>cô lập ngữ cảnh (Context Isolation)</strong> và cơ chế thu gom rác token (Garbage Collection). Thiết kế 3 mô hình đa tác tử kinh điển: Orchestrator-Workers, Assembly Line (Pipeline), và Evaluator-Optimizer. Phân tích tỉnh táo trade-off giữa giải pháp Native Harness (Claude Code / Antigravity) và các framework ngoài như LangGraph, CrewAI, AutoGen.</p>
+</div>
+
+<h2>0. Khởi động</h2>
+<p>Một câu ôn bài 9 (củng cố cơ chế feedback loop), và một câu đoán trước. Đáp án câu đoán nằm ở mục 1.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Câu ôn này trực tiếp khắc sâu bản chất của vòng lặp ReAct: PostToolUse là cảm biến phản hồi (sensor), không phải máy chém ngắt tiến trình.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Ở bài 9, khi một script kiểm tra biên dịch (PostToolUse hook) phát hiện lỗi và trả về exit code khác 0, cơ chế xử lý chuẩn mực của harness là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Harness thu thập stderr đưa vào context để model tự nhận biết lỗi và sửa lại mã</li>
+    <li>Harness lập tức ngắt phiên làm việc và dừng toàn bộ tiến trình hệ thống đang chạy</li>
+    <li>Harness tự động hoàn tác toàn bộ các thay đổi vừa thực hiện trên cây thư mục</li>
+    <li>Harness tự động tạo commit git nhằm lưu giữ lại trạng thái lỗi vừa phát sinh này</li>
+  </ul>
+  <p class="quiz-explain">Khi PostToolUse fail, harness bắt toàn bộ stderr của script và đưa vào context như một quan sát hệ thống (Observation) ở lượt kế tiếp. Nhờ đó, model tự đọc được lỗi biên dịch/linter và chủ động gọi thêm một lượt Tool Edit nữa để tự sửa lỗi (Autonomous Self-Healing) mà không cần con người can thiệp.</p>
+</div>
+
+<details>
+  <summary>Đoán trước: Nếu một subagent chuyên khảo sát mã nguồn phải đọc 20 file (tiêu tốn 40.000 token trong quá trình tìm kiếm) rồi tóm tắt lại kết quả thành 500 token, thì context window của agent chính sẽ tăng thêm bao nhiêu token? Viết ra rồi mới mở.</summary>
+  <p>Chính xác là chỉ tăng thêm <strong>khoảng 500 token</strong> (cộng thêm vài chục token metadata gọi tool). 40.000 token trung gian đọc file đã hoàn toàn biến mất! Mục 1 sẽ giải phẫu cơ chế kỳ diệu này.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Vấn đề Context Isolation: Vì sao "God Agent" luôn thất bại?</h2>
+
+<p>Hãy hình dung một tác vụ thực tế trong dự án Spring Boot ngân hàng: <em>"Kiểm tra xem hệ thống tính phí giao dịch ngoại tệ (FX Fee) đang được gọi ở những service nào, và sửa lại công thức làm tròn số thập phân."</em></p>
+
+<p>Nếu để một agent duy nhất giải quyết toàn bộ trong một luồng (thread) hội thoại:</p>
+<ol>
+  <li>Agent dùng lệnh tìm kiếm, liệt kê 35 files liên quan đến module thanh toán và tỷ giá.</li>
+  <li>Agent lần lượt mở đọc 15 files để hiểu luồng gọi nghiệp vụ. Mỗi file Java khoảng 300–500 dòng $\implies$ context nạp thêm ~45.000 tokens.</li>
+  <li>Agent bắt đầu sửa 2 file mã nguồn.</li>
+  <li>Agent chạy test, gặp lỗi, đọc log kiểm thử $\implies$ context tiếp tục phình lên 70.000 tokens.</li>
+</ol>
+
+<p>Hậu quả kiến trúc của mô hình "God Agent" này là gì?<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Anthropic gọi đây là <em>Context Pollution</em> hay <em>Context Tax</em>: anh đang trả tiền cho những token đã hoàn thành nhiệm vụ lịch sử nhưng vẫn nằm lỳ trong bộ nhớ.</aside>
+
+<ul>
+  <li><strong>Hao phí tài chính lũy tiến:</strong> Nhắc lại kiến trúc LLM: mỗi turn mới, harness phải gửi <em>toàn bộ lịch sử</em> cho model. Khi context đạt 70k tokens, mỗi suy nghĩ, mỗi lượt gọi tool nhỏ nhặt tiếp theo của agent đều tiêu tốn chi phí input của 70k tokens!</li>
+  <li><strong>Hiện tượng Lost in the Middle &amp; Giảm tập trung:</strong> Khi context chứa đầy hàng nghìn dòng code tham khảo cũ, model bắt đầu đãng trí: bỏ sót quy ước trong <code>AGENTS.md</code>, quên mất yêu cầu gốc của user, hoặc sinh code nhầm lẫn giữa các phiên bản service cũ và mới.</li>
+  <li><strong>Độ trễ tăng vọt (High TTFT):</strong> Thời gian xử lý prompt hàng chục nghìn tokens trước khi sinh ra ký tự đầu tiên tăng từ vài trăm mili-giây lên 5–10 giây.</li>
+</ul>
+
+<div class="callout">
+  <span class="label">So sánh Backend</span>
+  <p>Một "God Agent" giống như một <strong>Monolithic Process</strong> duy nhất gánh vác mọi việc: khi một luồng tải dữ liệu báo cáo khổng lồ vào RAM, toàn bộ bộ nhớ Heap bị phình trướng, kích hoạt Full GC liên tục và làm nghẽn luôn các luồng xử lý giao dịch thanh toán lõi.<br>
+  <strong>Subagent chính là mô hình Microservice hoặc Worker Process (Fork):</strong> ta tách tác vụ đọc dữ liệu nặng nề sang một tiến trình riêng biệt với vùng nhớ Heap độc lập. Khi worker làm xong, nó trả về DTO kết quả nhỏ gọn rồi tự giải phóng vùng nhớ của mình!</p>
+</div>
+
+<h2>2. Ba mô hình Multi-agent chuẩn mực (Patterns)</h2>
+
+<p>Thay vì để một agent ôm đồm, kỹ nghệ agent hiện đại tổ chức công việc theo 3 mẫu hình kiến trúc:</p>
+
+<h3>Mô hình 1: Orchestrator-Workers (Hub &amp; Spoke)</h3>
+<p>Đây là mô hình phổ biến và thực dụng nhất trong các coding harness hiện đại (như Claude Code và Antigravity):</p>
+
+<div class="diagram">
+<pre>
+                  ┌──────────────────────────────┐
+                  │    User / Task Briefing      │
+                  └──────────────┬───────────────┘
+                                 │
+                                 ▼
+                  ┌──────────────────────────────┐
+                  │   Orchestrator Main Agent    │ ◄── Ngữ cảnh tinh gọn (~5k tokens)
+                  │ (Giữ mục tiêu, phân chia việc)│
+                  └───┬──────────────┬───────────┘
+                      │              │
+      Ủy thác nhiệm vụ│              │Ủy thác kiểm tra
+      (Context Fork)  ▼              ▼ (Context Fork)
+  ┌───────────────────────┐      ┌───────────────────────┐
+  │   Research Subagent   │      │   Reviewer Subagent   │
+  │ (Đọc 30 files mã nguồn│      │ (So sánh git diff,    │
+  │  Tốn 50k tokens rác)  │      │  chạy test độc lập)   │
+  └───────────┬───────────┘      └───────────┬───────────┘
+              │                              │
+              └──────────────┬───────────────┘
+                             ▼
+              Chỉ trả về <strong>Bản tóm tắt kết quả</strong> (~500 tokens)
+              Toàn bộ 50k tokens đọc file bị Garbage Collect!
+</pre>
+</div>
+
+<p><strong>Cơ chế Context Fork:</strong> Main agent gọi subagent thông qua một prompt nhiệm vụ đóng gói gọn gàng. Subagent chạy trên một nhánh context hoàn toàn mới. Khi subagent hoàn thành, nó chỉ trả về kết luận (summary). Toàn bộ dấu vết đọc hàng chục files bị vứt bỏ, bảo vệ context của main agent luôn tinh khôi.</p>
+
+<h3>Mô hình 2: Assembly Line (Sequential Pipeline / Handoff)</h3>
+<p>Áp dụng cho các tính năng mới cần quy trình chặt chẽ (RePPIT / Spec-driven):</p>
+<ul>
+  <li><strong>Chặng 1: Planner Agent (Chỉ đọc)</strong> $\to$ Khảo sát yêu cầu, sinh ra file <strong>Spec Markdown</strong> trên đĩa.</li>
+  <li><strong>Chặng 2: Implementer Agent (Quyền ghi)</strong> $\to$ Đọc file Spec, viết code, sửa test.</li>
+  <li><strong>Chặng 3: Reviewer Agent (Chỉ đọc)</strong> $\to$ So sánh git diff với Spec ban đầu, chạy linter, xuất báo cáo review.</li>
+</ul>
+
+<blockquote>
+<p><strong>Nguyên tắc vàng về Handoff:</strong> Trong mô hình pipeline, các agent bàn giao công việc cho nhau thông qua <strong>Handoff Artifacts (file spec, file diff, test report trên ổ đĩa)</strong>, TUYỆT ĐỐI KHÔNG bàn giao bằng cách ném nguyên chuỗi lịch sử chat tự do qua lại! Truyền chat tự do làm rò rỉ rác ngữ cảnh và gây méo mó yêu cầu.</p>
+</blockquote>
+
+<h3>Mô hình 3: Evaluator-Optimizer (Critic Loop)</h3>
+<p>Mô hình cộng tác giữa <em>Người làm</em> (Implementer) và <em>Người chấm</em> (Evaluator/Critic):</p>
+<ol>
+  <li>Implementer đề xuất giải pháp mã nguồn.</li>
+  <li>Evaluator đối chiếu với tiêu chuẩn bảo mật hoặc benchmark hiệu năng, đưa ra phản biện.</li>
+  <li>Implementer tiếp thu và sửa đổi.</li>
+</ol>
+<p><em>Ràng buộc sống còn:</em> Vòng lặp này <strong>bắt buộc phải có Circuit Breaker (ngưỡng dừng cứng: Max 2–3 iterations)</strong>. Nếu không, hai agent sẽ rơi vào bẫy "tranh cãi vô tận" (Ping-pong trap).</p>
+
+<h2>3. Cơ chế Harness: Claude Code vs Antigravity</h2>
+
+<p>Mỗi harness có cơ chế hiện thực hóa subagent khác nhau ở tầng runtime:</p>
+
+<table>
+  <tr>
+    <th>Hạng mục</th>
+    <th>Claude Code</th>
+    <th>Antigravity</th>
+  </tr>
+  <tr>
+    <td><strong>Khởi tạo Subagent</strong></td>
+    <td>Khai báo qua frontmatter <code>context: fork</code> trong custom slash command hoặc subagent definition tại <code>.claude/agents/*.md</code>.</td>
+    <td>Gọi tool <code>define_subagent</code> (định nghĩa động) và <code>invoke_subagent</code> (kích hoạt chạy ngầm).</td>
+  </tr>
+  <tr>
+    <td><strong>Phân quyền Tool (Scoping)</strong></td>
+    <td>Khai báo danh sách <code>allowed-tools</code> (ví dụ: chỉ cho phép <code>ReadNotebook</code>, <code>Grep</code>, cấm <code>Edit</code>).</td>
+    <td>Cấu hình cờ <code>enable_write_tools: false</code> để tạo agent chỉ đọc (read-only research agent).</td>
+  </tr>
+  <tr>
+    <td><strong>Không gian làm việc (Workspace)</strong></td>
+    <td>Chạy chung trên working directory hiện tại.</td>
+    <td>Hỗ trợ 3 chế độ workspace cực mạnh:<br>
+    - <code>inherit</code>: dùng chung thư mục.<br>
+    - <code>branch</code>: <strong>tự động tạo git worktree/branch riêng</strong>, bảo vệ tuyệt đối không bị đè file.<br>
+    - <code>share</code>: chia sẻ repo underlying.</td>
+  </tr>
+  <tr>
+    <td><strong>Mô hình thực thi</strong></td>
+    <td>Đồng bộ: Main agent đợi subagent chạy xong và nhận kết quả text.</td>
+    <td>Bất đồng bộ (Reactive Wakeup): Main agent có thể kích hoạt nhiều subagent chạy nền cùng lúc và tiếp tục việc khác; harness tự đánh thức khi subagent nhắn tin về.</td>
+  </tr>
+</table>
+
+<h2>4. So sánh Framework: Native Harness vs LangGraph vs CrewAI vs AutoGen</h2>
+
+<p>Hiện nay trên thị trường có nhiều framework quảng bá rầm rộ về "Multi-agent". Một senior engineer cần phân biệt rõ ranh giới kiến trúc và mục đích sử dụng:</p>
+
+<table>
+  <tr>
+    <th>Framework</th>
+    <th>Mô hình tư duy cốt lõi</th>
+    <th>Ưu điểm nổi bật</th>
+    <th>Nhược điểm &amp; Rủi ro</th>
+  </tr>
+  <tr>
+    <td><strong>Harness-Native</strong><br>(Claude Code, Antigravity)</td>
+    <td>Công cụ lập trình (Developer-centric), bám sát IDE, shell và filesystem.</td>
+    <td>Tốc độ cao, chi phí token tối ưu, kiểm soát context chặt chẽ, không sinh boilerplate thừa.</td>
+    <td>Giới hạn trong môi trường coding agent; không thiết kế để dựng ứng dụng web agent độc lập cho end-user.</td>
+  </tr>
+  <tr>
+    <td><strong>LangGraph</strong><br>(LangChain ecosystem)</td>
+    <td>State Machine / Directed Graph: các agent là Node, luồng điều hướng là Edge có điều kiện.</td>
+    <td>Cực mạnh cho quy trình doanh nghiệp có rẽ nhánh phức tạp, hỗ trợ lưu checkpoint (time-travel debugging), human-in-the-loop.</td>
+    <td>Độ phức tạp (learning curve) cao, nhiều code boilerplate, dễ bị over-engineering cho các tác vụ lập trình thông thường.</td>
+  </tr>
+  <tr>
+    <td><strong>CrewAI</strong></td>
+    <td>Role-playing: mô phỏng nhân sự (Bạn là Senior Java Architect, Bạn là QA Tester).</td>
+    <td>Cực kỳ dễ demo, viết code định nghĩa agent trực quan, giao việc theo chức danh quen thuộc.</td>
+    <td><strong>Cháy token:</strong> Prompt bị nhồi nhét quá nhiều câu văn mô tả tính cách/vai trò; các agent dễ sa đà vào việc "đóng kịch" thay vì giải quyết task kỹ thuật.</td>
+  </tr>
+  <tr>
+    <td><strong>AutoGen</strong><br>(Microsoft)</td>
+    <td>Conversational Group Chat: các agent trò chuyện, phản biện tự do qua tin nhắn.</td>
+    <td>Linh hoạt trong nghiên cứu mô phỏng tương tác xã hội giữa các mô hình ngôn ngữ.</td>
+    <td><strong>Khó kiểm soát nhất:</strong> Rất dễ rơi vào bẫy hội thoại vòng quanh (Chatter loop), thiếu tính tất định cần có của phần mềm production.</td>
+  </tr>
+</table>
+
+<div class="callout">
+  <span class="label">Lời khuyên thực chiến</span>
+  <p>Đối với công việc kỹ thuật hàng ngày (coding, refactor, debug, review): <strong>Ưu tiên tuyệt đối Native Subagents của Harness</strong> (hoặc script phân rã đơn giản). Đừng vội vã đưa LangGraph hay CrewAI vào khi bài toán chỉ là đọc hiểu và sửa đổi codebase. Đơn giản là tối thượng!</p>
+</div>
+
+<h2>5. Bốn bẫy kiến trúc (Pitfalls) của Multi-agent</h2>
+
+<p>Khi bước vào thế giới đa tác tử, các lỗi sau đây là nguyên nhân hàng đầu khiến dự án agent thất bại:</p>
+
+<h3>Bẫy 1: Ping-pong / Banter Trap (Tranh luận vô tận)</h3>
+<p>Khi Implementer và Reviewer được cấu hình phản biện lẫn nhau mà không có tiêu chí định lượng: Reviewer bắt bẻ tên biến $\to$ Implementer sửa $\to$ Reviewer bảo chưa ưng ý $\to$ Implementer giải thích. Sau 10 turns, cạn sạch ngân sách token mà code vẫn chưa chạy.</p>
+<p><em>Khắc phục:</em> Luôn cài đặt <strong>Max Iterations $\le$ 3</strong>. Mọi tiêu chí về format, style, biên dịch phải giao cho <strong>Hook/Linter tất định</strong> kiểm tra, cấm để hai agent tranh luận văn xuôi về formatting!</p>
+
+<h3>Bẫy 2: Context Starvation (Đãng trí khi bàn giao)</h3>
+<p>Gọi subagent với câu lệnh cộc lốc: <em>"Kiểm tra lỗi NullPointerException trong PaymentService giúp tôi"</em>. Subagent chạy trên một context fork trống trơn, không hề biết branch hiện tại là gì, test case nào đang fail, hay quy ước trong <code>AGENTS.md</code> ra sao $\implies$ Subagent hallucinate hoặc trả lời chung chung như ChatGPT.</p>
+<p><em>Khắc phục:</em> Lời gọi subagent phải là một <strong>Self-contained Briefing</strong>: cung cấp đường dẫn file chính xác, error log cụ thể, và mục tiêu đầu ra rõ ràng.</p>
+
+<h3>Bẫy 3: Workspace Collision (Xung đột ghi đè mã nguồn)</h3>
+<p>Nếu hai subagent cùng chạy song song và cùng sửa đổi mã nguồn trên cùng một thư mục làm việc, chúng sẽ ghi đè đè lên nhau, gây ra trạng thái race condition tồi tệ hơn cả multithreading không đồng bộ.</p>
+<p><em>Khắc phục:</em> Áp dụng nguyên tắc Single Writer: chỉ một agent có quyền ghi mã nguồn tại một thời điểm; hoặc sử dụng chế độ cách ly <code>branch</code> (git worktree) của Antigravity để mỗi agent thao tác trên một branch riêng biệt rồi merge lại qua pull request.</p>
+
+<h3>Bẫy 4: Over-engineering (Dao mổ trâu giết gà)</h3>
+<p>Một lỗi typo chính tả trong file README hoặc sửa 1 dòng query SQL đơn giản mà kích hoạt quy trình 3 subagents (Planner $\to$ Coder $\to$ Reviewer) $\implies$ tốn gấp 5 lần tiền và 10 lần thời gian vô ích.</p>
+<p><em>Quy tắc vàng:</em> <strong>Chỉ chia subagent khi lượng đọc vượt quá 20.000 tokens</strong> hoặc khi cần <strong>cô lập quyền truy cập</strong> (ví dụ: cần một agent chỉ được đọc chứ không được sửa code).</p>
+
+<h2>6. Kiểm tra hiểu biết cuối bài</h2>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Lợi ích kiến trúc quan trọng nhất khi tách một tác vụ khám phá mã nguồn lớn cho một Subagent độc lập thực hiện là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Ngăn chặn việc rò rỉ hàng chục nghìn token rác vào ngữ cảnh làm việc của agent chính</li>
+    <li>Giúp cho model có thể tăng tốc độ sinh văn bản lên gấp nhiều lần so với trước</li>
+    <li>Cho phép vượt qua mọi giới hạn an toàn của hệ điều hành trên máy chủ phát triển</li>
+    <li>Tự động giải quyết các lỗi cú pháp mà không cần gọi thêm bất kỳ công cụ nào</li>
+  </ul>
+  <p class="quiz-explain">Subagent hoạt động trong một context fork độc lập. Hàng chục nghìn token phát sinh từ việc mở đọc hàng loạt file mã nguồn chỉ tồn tại tạm thời; khi kết thúc, subagent chỉ trả về bản tóm tắt ngắn cho main agent, giúp context chính luôn tinh gọn và tránh hiện tượng Lost in the Middle.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Trong mô hình Planner - Implementer - Reviewer, phương thức bàn giao (handoff) giữa các agent nào được coi là chuẩn mực và an toàn nhất?</p>
+  <ul class="quiz-options">
+    <li data-correct>Bàn giao thông qua các file tài liệu đặc tả cùng bản vá mã nguồn ghi trên đĩa</li>
+    <li>Bàn giao bằng cách nhồi toàn bộ lịch sử hội thoại dài dòng qua lại giữa các agent</li>
+    <li>Bàn giao thông qua việc dùng chung một vùng nhớ chia sẻ toàn cục giữa các luồng chạy</li>
+    <li>Bàn giao bằng cách truyền nối tiếp các biến môi trường ngầm định trong suốt phiên làm việc</li>
+  </ul>
+  <p class="quiz-explain">Bàn giao chuẩn mực trong kỹ nghệ agent luôn dựa trên Handoff Artifacts (file spec markdown, bản vá git diff, file test report trên ổ đĩa). Việc truyền nguyên lịch sử chat tự do qua lại sẽ làm ô nhiễm ngữ cảnh và gây méo mó yêu cầu kỹ thuật.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Hiện tượng bẫy tương tác "Ping-pong / Banter Trap" trong hệ thống multi-agent thường dẫn đến hậu quả nguy hiểm nào sau đây?</p>
+  <ul class="quiz-options">
+    <li data-correct>Hai tác tử tranh luận và khen ngợi nhau qua lại vô tận gây cháy ngân sách token</li>
+    <li>Mô hình ngôn ngữ bị sập nguồn máy chủ do xung đột luồng xử lý của hệ thống</li>
+    <li>Cơ sở dữ liệu tự động kích hoạt tính năng khóa toàn bộ các bảng ghi dữ liệu</li>
+    <li>Trình duyệt web từ chối hiển thị tài liệu do vi phạm các chính sách bảo mật mạng</li>
+  </ul>
+  <p class="quiz-explain">Ping-pong trap xảy ra khi các agent phản biện lẫn nhau bằng văn xuôi mà không có chốt chặn cứng hoặc tiêu chí định lượng, dẫn đến việc khen ngợi hoặc tranh cãi vòng quanh làm cạn kiệt ngân sách token. Giải pháp là đặt Max Iterations và dùng Hook/Linter tất định để đánh giá.</p>
+</div>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<details>
+  <summary>Tự diễn đạt 1: Giải thích cơ chế "Garbage Collection" của context khi dùng Subagent bằng góc nhìn quản lý bộ nhớ heap/stack trong Java.</summary>
+  <p><em>Gợi ý đối chiếu:</em> Khi main agent tự làm mọi việc, các biến trung gian khổng lồ (nội dung 30 files) được lưu vào phạm vi toàn cục (Global Context Heap) và không bao giờ được giải phóng. Khi gọi Subagent, tác vụ tương tự như mở một Stack Frame mới hoặc gọi một Thread riêng biệt: mọi dữ liệu đọc file được cấp phát trên Stack Frame của Subagent. Khi Subagent return giá trị tóm tắt, Stack Frame bị hủy hoàn toàn, giải phóng sạch sẽ bộ nhớ.</p>
+</details>
+
+<details>
+  <summary>Tự diễn đạt 2: Nếu một junior engineer trong team đề xuất tích hợp CrewAI để chia 5 agent (Frontend Dev, Backend Dev, Tester, DevOps, Project Manager) cùng chat với nhau để viết một tính năng nhỏ, anh sẽ phân tích trade-off và phản biện thế nào?</summary>
+  <p><em>Gợi ý đối chiếu:</em> Phân tích 3 điểm yếu: (1) Token overhead khổng lồ từ các đoạn prompt mô tả tính cách/role của 5 agent; (2) Nguy cơ Ping-pong và mất tập trung cao độ khi 5 agent trò chuyện tự do; (3) Chi phí và độ trễ cao không tương xứng với giá trị của một tính năng nhỏ. Đề xuất: Dùng một agent duy nhất kèm RePPIT spec, hoặc tối đa là một cặp Planner/Implementer với handoff bằng file spec markdown.</p>
+</details>
+
+<h2>7. Thực hành: Kiểm chứng Context Isolation trên máy</h2>
+
+<p>Hãy trải nghiệm thực tế cơ chế cô lập của Subagent ngay trên workspace này:</p>
+
+<ol>
+  <li><strong>Quan sát Subagent có sẵn:</strong> Mở file hướng dẫn hệ thống của Antigravity (`AGENTS.md` / `GEMINI.md`) để xem danh sách các subagent được cấp quyền:
+    <ul>
+      <li><code>research</code>: Subagent chỉ đọc (read-only), dùng để khảo sát codebase hoặc tìm kiếm tài liệu mà không làm bẩn context chính.</li>
+      <li><code>self</code>: Subagent có đầy đủ quyền đọc/ghi/chạy lệnh.</li>
+    </ul>
+  </li>
+  <li><strong>Thử nghiệm trong suy nghĩ:</strong> Khi cần tìm kiếm một mẫu code Java trong toàn bộ dự án lớn:
+    <ul>
+      <li>Nếu tự chạy <code>grep_search</code> rồi <code>view_file</code> 10 lần trong thread chính: context của anh tăng ngay 20.000 tokens.</li>
+      <li>Nếu ủy thác: <em>"Hãy gọi subagent research tìm cho tôi tất cả các class kế thừa từ BaseService và tóm tắt danh sách"</em>: subagent tự đọc 10 files đó ở phòng riêng, rồi chỉ trả về 1 danh sách 5 gạch đầu dòng. Main thread chỉ tốn ~100 tokens!</li>
+    </ul>
+  </li>
+  <li><strong>Kiểm tra tính năng lưu log trắc nghiệm mới:</strong> Hãy thử trả lời bộ câu hỏi trắc nghiệm ở trên, F5 lại trang để thấy kết quả được phục hồi nguyên vẹn, sau đó bấm nút <strong>"📋 Sao chép báo cáo kết quả gửi Agent"</strong> ở Bảng tổng kết bên dưới để dán vào chat!</li>
+</ol>
+
+<h2>Tóm tắt cốt lõi</h2>
+<ul>
+  <li><strong>Context Isolation là lý do số 1:</strong> Subagent không phải để "làm màu" đa nhân cách, mà là giải pháp kỹ thuật để <em>cô lập ngữ cảnh</em> và thu gom rác token sau các tác vụ đọc nặng nề.</li>
+  <li><strong>Handoff bằng Artifact:</strong> Không truyền chat tự do qua lại giữa các agent. Bàn giao thông qua file Spec, Git diff, hoặc Test report trên đĩa.</li>
+  <li><strong>Đơn giản là sức mạnh:</strong> Ưu tiên subagent native của harness. Đừng lạm dụng các framework role-playing phức tạp khi chưa thật sự cần thiết.</li>
+</ul>
+
+<p>Chúc mừng anh đã hoàn thành toàn bộ <strong>Module 4: Tùy biến agent &amp; repo</strong>! Ở Module 5, ta sẽ bước sang chủ đề vô cùng quan trọng đối với một Tech Lead: <strong>Codebase sẵn sàng cho agent (Agent-ready) &amp; Kỹ thuật Eval đo lường chất lượng</strong>.</p>
+
+<nav class="lesson-nav">
+  <a href="0009-hooks-lint-test-gate-guardrail.html">← Bài 9: Hooks: lint gate, test gate, guardrail</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0011-agent-ready-codebase-cham-diem-va-audit.html">Bài 11: Agent-ready codebase (Module 5) →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

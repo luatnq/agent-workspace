@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 3 — RePPIT và spec-driven: dẫn agent qua một việc lớn</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0003 · Module 2 (CS146S W2) · 2026-09-27 · ~40 phút · <a href="0002-giai-phau-system-prompt.html">Bài 2</a> · <a href="../reference/reppit-va-spec.html">Cheat sheet</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>RePPIT và spec-driven: dẫn agent qua một việc lớn</h1>
+<p class="subtitle">Hai bài trước nhìn agent từ bên trong. Bài này đổi vai: anh là người <em>giao việc</em>. Với việc nhỏ, một câu prompt là đủ. Với một feature chạm vào mười file trong một codebase lạ, một câu prompt gần như chắc chắn hỏng. Hôm nay ta học cách chia việc lớn thành các bước mà anh kiểm soát được.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Chạy hai bước đầu của RePPIT (Research, Propose) trên một ticket thật của team. Biết duyệt cái gì ở mỗi bước. Và quyết định được một việc cần bao nhiêu "nghi thức": làm luôn, plan mode, RePPIT, hay viết spec.</p>
+</div>
+
+<h2>0. Khởi động</h2>
+<p>Một câu ôn từ llm-foundation (anh sẽ cần nó ngay ở mục 3), và một câu tự diễn đạt ôn bài 2.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Câu 1 ôn context rot ở <a href="../../llm-foundation/lessons/0007-context-engineering-va-prompt-caching.html">bài 7 llm-foundation</a>. Câu tự diễn đạt ôn ReAct ở <a href="0002-giai-phau-system-prompt.html">bài 2</a>, lần này ở dạng tự nhớ lại thay vì trắc nghiệm.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Một phiên Claude Code đã chạy 3 giờ, context gần đầy. Agent bắt đầu làm ngược luật trong CLAUDE.md, dù file đó vẫn nằm nguyên trong context. Nguyên nhân chính là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Context càng dài, model càng kém tập trung</li>
+    <li>File CLAUDE.md đã bị harness xóa khỏi context</li>
+    <li>Prompt cache hết hạn nên model quên luật</li>
+    <li>Model tự cập nhật trọng số trong phiên</li>
+  </ul>
+  <p class="quiz-explain">Đây là context rot: accuracy giảm khi số token trong context tăng, kể cả với việc đơn giản. Cache chỉ ảnh hưởng giá và tốc độ, không ảnh hưởng thứ model "thấy". Trọng số không đổi trong phiên. Tài liệu Claude Code nói thẳng: <em>"performance degrades as it fills"</em> (tạm dịch: "hiệu năng giảm dần khi context đầy lên"). Mục 3 sẽ biến điều này thành một nguyên tắc làm việc.</p>
+</div>
+
+<details>
+  <summary>Tự diễn đạt: vì sao ReAct (nghĩ → làm → quan sát) ít hallucinate hơn chỉ suy luận từng bước? Viết 2 câu, rồi mới mở.</summary>
+  <p>Chỉ suy luận thì một giả định sai ở bước đầu kéo sai mọi bước sau, và không có gì chặn lại. Với ReAct, mỗi lần gọi tool model nhận về một quan sát thật từ bên ngoài (ví dụ <code>rg</code> báo hàm không tồn tại), nên nó sửa suy luận trước khi đi tiếp.</p>
+  <p>So với câu của anh: có đủ ý "lỗi dây chuyền" và ý "quan sát thật kéo suy luận về đúng" không?</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Vì sao "một prompt lớn" hỏng</h2>
+
+<p>Hãy hình dung anh giao cho một contractor giỏi, nhưng mới vào dự án hôm nay, một ticket chỉ có một dòng: "thêm hủy đơn hàng". Họ sẽ không hỏi lại mà bắt tay code luôn, dựa trên phỏng đoán về một codebase họ chưa đọc. Ba ngày sau anh nhận về 600 dòng diff và phát hiện họ hiểu sai từ đầu.</p>
+
+<p>Coding agent rơi đúng vào tình huống đó, vì hai lý do có bằng chứng:</p>
+<ul>
+  <li><strong>Agent không biết mình đang thiếu thông tin.</strong> Nghiên cứu Ambig-SWE (ICLR 2026) thấy <em>"models struggle to distinguish between well-specified and underspecified instructions"</em> (tạm dịch: "model khó phân biệt yêu cầu đã rõ với yêu cầu còn thiếu"). Khi được phép hỏi lại người dùng, kết quả tăng <em>"up to 74%"</em> (tạm dịch: "tới 74%").<span class="sidenote-ref"></span></li>
+  <li><strong>Context đầy thì agent kém đi</strong>, như câu khởi động vừa nhắc. Một việc lớn làm trong một phiên dài sẽ tự làm hỏng chính nó.</li>
+</ul>
+<aside class="sidenote"><a href="https://arxiv.org/abs/2502.13069">Vijayvargiya et al. — "Ambig-SWE: Interactive Agents to Overcome Underspecificity in Software Engineering"</a>, ICLR 2026.</aside>
+
+<p>Nên có "phương pháp" không, hay chỉ cần model mạnh hơn? Một thí nghiệm có đối chứng của METR (đầu năm 2025, 16 developer open-source nhiều kinh nghiệm, 246 task) thấy dùng AI làm họ <strong>chậm hơn 19%</strong>, trong khi chính họ tin là nhanh hơn 20%.<span class="sidenote-ref"></span> Kết quả này thuộc về công cụ và bối cảnh năm 2025, nên đừng khái quát quá. Nhưng nó cho thấy một điều: công cụ mạnh không tự biến thành năng suất. Cách làm việc mới là thứ quyết định.</p>
+<aside class="sidenote"><a href="https://arxiv.org/abs/2507.09089">METR — "Measuring the Impact of Early-2025 AI on Experienced Open-Source Developer Productivity"</a>.</aside>
+
+<p><strong>Điều cần nhớ:</strong> agent không tự biết nó thiếu gì, và càng làm lâu trong một phiên thì càng kém. Phương pháp tốt phải giải quyết cả hai: ép lộ ra chỗ hiểu sai sớm, và giữ context gọn.</p>
+
+<h2>2. Prompting năm 2026: những gì còn đúng, những gì đã cũ</h2>
+
+<p>Trước khi vào quy trình, ta dọn lại bộ đồ nghề prompt. Nhiều mẹo cũ trên mạng đã lỗi thời. Theo trang best practices hiện hành của Anthropic và Claude Code:<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Claude prompting best practices</a>; <a href="https://code.claude.com/docs/en/best-practices">Claude Code — Best practices</a>; <a href="https://code.claude.com/docs/en/model-config">Claude Code — Model config</a>.</aside>
+
+<table>
+  <tr><th>Kỹ thuật</th><th>Còn dùng?</th><th>Ghi chú</th></tr>
+  <tr><td><strong>Rõ ràng, cụ thể</strong>: chỉ đúng file, đúng pattern, mô tả triệu chứng</td><td>Quan trọng nhất</td><td><em>"Claude can infer intent, but it can't read your mind"</em> (tạm dịch: "Claude đoán được ý định, nhưng không đọc được suy nghĩ của anh")</td></tr>
+  <tr><td><strong>Cho cách tự kiểm tra</strong>: test, build, screenshot</td><td>Quan trọng nhất</td><td><em>"Give Claude a check it can run"</em> (tạm dịch: "cho Claude một phép kiểm tra nó tự chạy được"). Đây là pha verify của bài 1, giờ do anh chuẩn bị</td></tr>
+  <tr><td>Ví dụ mẫu, XML tag, giao vai trò</td><td>Còn dùng</td><td>Hữu ích khi cần output đúng format</td></tr>
+  <tr><td>Viết HOA, "CRITICAL: You MUST…"</td><td>Nên bỏ</td><td>Model mới đã rất nghe lời; nhấn quá tay làm nó áp dụng luật cả chỗ không nên</td></tr>
+  <tr><td>Prefill (viết sẵn đầu câu trả lời)</td><td>Đã bỏ</td><td>Từ Claude 4.6 trả lỗi 400</td></tr>
+  <tr><td>Gõ "think hard" trong Claude Code</td><td>Không có tác dụng đặc biệt</td><td>Chỉ <code>ultrathink</code> là từ khóa; còn lại là chữ bình thường. Điều khiển chính là effort level</td></tr>
+</table>
+
+<p>Đến đây anh có thể tự hỏi: vậy prompt tốt cho việc lớn trông thế nào? Câu trả lời bất ngờ là: <strong>không có một prompt tốt cho việc lớn</strong>. Việc lớn cần một chuỗi prompt nhỏ, mỗi prompt sinh ra một tài liệu mà anh đọc và duyệt được. Đó là RePPIT.</p>
+
+<p><strong>Điều cần nhớ:</strong> hai kỹ thuật đáng giá nhất là <em>cụ thể</em> và <em>cho cách tự kiểm tra</em>. Các mẹo gây sức ép với model (viết hoa, dọa dẫm) đã hết thời.</p>
+
+<h2>3. RePPIT: năm bước, bốn lần anh duyệt</h2>
+
+<p>RePPIT do Mihail Eric, giảng viên CS146S, đặt tên: <em>"Research the codebase, Propose solutions, Plan the chosen one, Implement it, Test it"</em> (tạm dịch: "Nghiên cứu codebase, Đề xuất giải pháp, Lập kế hoạch cho giải pháp được chọn, Triển khai, Kiểm thử"). Ông viết rằng không bước nào là mới, cái mới là chạy chúng tuần tự để agent <em>"staying anchored to the real context the whole way"</em> (tạm dịch: "luôn bám vào context thật trong suốt quá trình").<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://mlops.community/blog/reppit-a-framework-to-ship-production-code-2-3x-faster">Mihail Eric — "RePPIT: A Framework to Ship Production Code 2-3X Faster"</a>, 06/2026. Con số "2-3X" là trải nghiệm của tác giả, không có đo đạc đối chứng.</aside>
+
+<p>Anh đã quen với quy trình này, chỉ là ở tên khác. Nó giống cách làm một hạng mục xây dựng: khảo sát hiện trạng, xin hai bản phác thảo từ kiến trúc sư, chọn một rồi ra bản vẽ thi công, thi công, và cuối cùng một người khác nghiệm thu.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+  subgraph A["Trước khi có dòng code nào"]
+    direction LR
+    R["Research<br/>mô tả hiện trạng"] -->|anh duyệt| P1["Propose<br/>đúng 2 phương án"]
+    P1 -->|anh chọn 1| P2["Plan<br/>design doc"]
+  end
+  subgraph B["Code và sau code"]
+    direction LR
+    I["Implement<br/>theo plan"] --> T["Test<br/>instance khác review"]
+    T -->|anh duyệt| M["Merge"]
+  end
+  A -->|anh duyệt plan| B
+</pre>
+<figcaption>Hình 1. RePPIT. Hãy nhìn nhãn trên các mũi tên: đó là bốn chỗ anh can thiệp. Ba chỗ nằm <em>trước</em> khi có dòng code nào, chỗ cuối nằm <em>sau</em>; không có chỗ nào nằm giữa lúc agent đang code. Giữa hai bước, nên xóa context (<code>/clear</code>) và chỉ mang theo tài liệu của bước trước.</figcaption>
+</figure>
+
+<table>
+  <tr><th>Bước</th><th>Output</th><th>Luật quan trọng nhất</th></tr>
+  <tr><td><strong>Research</strong></td><td>File Markdown 100–300 dòng mô tả codebase <em>như nó đang là</em></td><td><em>"No feature talk, no recommendations"</em> (tạm dịch: "không bàn feature, không đề xuất"). Chạy lại mới mỗi lần, không commit</td></tr>
+  <tr><td><strong>Propose</strong></td><td>Đúng <strong>hai</strong> phương án, mỗi cái có: tổng quan, thay đổi chính, trade-off, cách kiểm tra, câu hỏi mở</td><td>Xin nhiều hơn thì <em>"the extras are just reskins of the first"</em> (tạm dịch: "các phương án thêm chỉ là bản sơn lại của cái đầu tiên")</td></tr>
+  <tr><td><strong>Plan</strong></td><td>Design doc: yêu cầu, quyết định kèm lý do, data model, điểm tích hợp, danh sách file sẽ sửa và <em>không</em> sửa</td><td>Xóa context trước khi chạy, để cuộc tranh luận ở bước Propose không làm nhiễu</td></tr>
+  <tr><td><strong>Implement</strong></td><td>Code</td><td>Plan tốt thì prompt triển khai <em>"has almost no room to guess"</em> (tạm dịch: "gần như không còn chỗ để đoán")</td></tr>
+  <tr><td><strong>Test</strong></td><td>Review, test</td><td><em>"Do not let the instance that wrote the code review it"</em> (tạm dịch: "đừng để chính instance đã viết code review nó"). Xóa sạch context hoặc đổi sang model khác</td></tr>
+</table>
+
+<p>Vì sao lại dồn công sức duyệt vào tài liệu thay vì vào code? Dex Horthy (HumanLayer), người phổ biến quy trình Research → Plan → Implement mà RePPIT kế thừa, giải thích bằng đòn bẩy: <em>"a bad line of a plan could lead to hundreds of bad lines of code. And a bad line of research… could land you with thousands of bad lines of code."</em> (tạm dịch: "một dòng sai trong plan có thể sinh ra hàng trăm dòng code sai. Còn một dòng sai trong research… có thể để lại cho anh hàng nghìn dòng code sai.")<span class="sidenote-ref"></span> Người lead đã quen điều này: sửa một hiểu lầm trong buổi grooming rẻ hơn nhiều so với sửa nó trong code review.</p>
+<aside class="sidenote"><a href="https://github.com/humanlayer/advanced-context-engineering-for-coding-agents/blob/main/ace-fca.md">Dex Horthy — "Getting AI to Work in Complex Codebases" (ACE-FCA)</a>, 08/2025. Có một thất bại được kể thật: research không đi đủ sâu vào cây dependency. Tác giả cũng lưu ý: <em>"you probably need at least one person who is an expert in the codebase"</em> (tạm dịch: "có lẽ anh cần ít nhất một người thật sự hiểu codebase").</aside>
+
+<p>Còn chuyện xóa context giữa các bước thì liên quan thẳng tới câu khởi động. Horthy gọi đây là <em>compaction có chủ đích</em>: dồn những gì đã học vào một tài liệu có cấu trúc, rồi bắt đầu phiên mới chỉ với tài liệu đó. Ông đặt mục tiêu giữ mức sử dụng context <em>"in the 40%-60% range"</em> (tạm dịch: "trong khoảng 40–60%"). Nói đơn giản: mỗi bước làm việc trong một context sạch và nhỏ, nên model luôn ở trạng thái tỉnh táo nhất.</p>
+
+<p>Nhiều người nghĩ RePPIT là "bắt agent làm chậm lại". Thật ra nó chuyển chỗ tốn thời gian: bớt thời gian đọc diff dài và sửa code sai, thêm thời gian đọc tài liệu ngắn. Claude Code cũng đi theo tinh thần này với chuỗi Explore → Plan → Implement → Commit và plan mode.</p>
+
+<p><strong>Điều cần nhớ:</strong> RePPIT = năm bước, mỗi bước sinh một tài liệu anh duyệt được; xóa context giữa các bước. Duyệt research và plan có đòn bẩy lớn hơn duyệt code.</p>
+
+<h2>4. Spec-driven development, và khi nào nó quá tay</h2>
+
+<p>RePPIT sinh ra plan rồi bỏ đi sau khi xong. Spec-driven development (SDD) đi xa hơn: <strong>spec là thứ chính</strong>, code chỉ là sản phẩm sinh ra từ spec. GitHub Spec Kit gói ý này thành chuỗi lệnh: một lần <code>constitution</code> cho cả dự án (nguyên tắc chung), rồi mỗi feature đi qua <code>specify → plan → tasks → implement</code>. Khẩu hiệu của nó là <em>"Define what and why before deciding how"</em> (tạm dịch: "xác định cái gì và vì sao trước khi quyết định làm thế nào"). AWS Kiro làm tương tự với ba file <code>requirements.md</code>, <code>design.md</code>, <code>tasks.md</code>, trong đó yêu cầu viết theo mẫu EARS: <em>"WHEN [điều kiện] THE SYSTEM SHALL [hành vi]"</em> (tạm dịch: "KHI [điều kiện] THÌ HỆ THỐNG PHẢI [hành vi]").<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://github.com/github/spec-kit">github/spec-kit</a>; <a href="https://github.blog/ai-and-ml/generative-ai/spec-driven-development-with-ai-get-started-with-a-new-open-source-toolkit/">GitHub Blog (09/2025)</a>; <a href="https://kiro.dev/docs/specs/">Kiro — Specs</a>.</aside>
+
+<p>Nghe rất hợp với một team làm ngân hàng. Nhưng Birgitta Böckeler (Thoughtworks) thử cả ba công cụ và đưa ra một khung phân biệt hữu ích:<span class="sidenote-ref"></span></p>
+<aside class="sidenote"><a href="https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html">Birgitta Böckeler — "Understanding Spec-Driven-Development: Kiro, spec-kit, and Tessl"</a>, martinfowler.com.</aside>
+
+<table>
+  <tr><th>Mức</th><th>Nghĩa là</th><th>Rủi ro</th></tr>
+  <tr><td><strong>Spec-first</strong></td><td>Viết spec trước, dùng cho việc đang làm</td><td>Ít; gần với RePPIT</td></tr>
+  <tr><td><strong>Spec-anchored</strong></td><td>Giữ spec sau khi xong, để bảo trì về sau</td><td>Spec lỗi thời, giống tài liệu Confluence không ai cập nhật</td></tr>
+  <tr><td><strong>Spec-as-source</strong></td><td>Người không bao giờ sửa code, chỉ sửa spec</td><td><em>"Inflexibility and non-determinism"</em> (tạm dịch: "vừa cứng nhắc vừa không tất định")</td></tr>
+</table>
+
+<p>Böckeler kể lại: dùng Kiro cho một bug nhỏ thì giống <em>"using a sledgehammer to crack a nut"</em> (tạm dịch: "dùng búa tạ để đập hạt dẻ"), vì nó sinh ra 4 user story và 16 tiêu chí nghiệm thu. Bà cũng nhận xét <em>"I'd rather review code than all these markdown files"</em> (tạm dịch: "tôi thà review code còn hơn đọc hết đống file markdown này"), và thấy agent vẫn bỏ qua ghi chú trong spec.</p>
+
+<p>Có một bằng chứng định lượng đáng lưu ý. Nghiên cứu "Evaluating AGENTS.md" (2026) đo trên nhiều agent và thấy context file <em>"do not generally improve task success rates, while increasing inference cost by over 20%"</em> (tạm dịch: "nhìn chung không cải thiện tỉ lệ hoàn thành task, trong khi tăng chi phí inference hơn 20%"). Phần tổng quan repo thì <em>"not helpful"</em> (tạm dịch: "không giúp ích"). Thứ có tác dụng là chỉ dẫn về những quy ước <em>khác thường</em> của repo.<span class="sidenote-ref"></span> Nói đơn giản: tài liệu cho agent không miễn phí. Mỗi dòng phải chứa thứ agent không tự đọc code mà suy ra được.</p>
+<aside class="sidenote"><a href="https://arxiv.org/abs/2602.11988">Gloaguen et al. — "Evaluating AGENTS.md: Are Repository-Level Context Files Helpful for Coding Agents?"</a> (02/2026, sửa 06/2026).</aside>
+
+<p>Vậy chọn thế nào? Đây là khung tôi đề xuất, ghép từ các nguồn trên:</p>
+
+<table>
+  <tr><th>Tình huống</th><th>Cách làm</th></tr>
+  <tr><td>Mô tả được diff trong một câu</td><td>Làm luôn. Claude Code: <em>"If you could describe the diff in one sentence, skip the plan"</em> (tạm dịch: "nếu tả được diff trong một câu thì bỏ qua bước plan")</td></tr>
+  <tr><td>Vài file, codebase quen</td><td>Plan mode, duyệt plan rồi cho làm</td></tr>
+  <tr><td>Feature lớn, hoặc codebase lạ</td><td>RePPIT đủ năm bước</td></tr>
+  <tr><td>Cả team cần thống nhất yêu cầu (nghiệp vụ, audit)</td><td>Spec-first, có thể giữ lại spec (spec-anchored) nếu team có kỷ luật cập nhật</td></tr>
+</table>
+
+<p><strong>Điều cần nhớ:</strong> lượng nghi thức phải tỉ lệ với độ lớn và độ lạ của việc. Spec giúp team thống nhất, nhưng không bảo đảm agent làm theo, và spec lỗi thời còn tệ hơn không có spec.</p>
+
+<h2>5. Thực hành trên repo công việc (~20 phút)</h2>
+
+<p>Chọn một ticket <strong>cỡ vừa</strong> trong backlog của team, loại anh ước lượng mất 1–2 ngày, trong một repo mà anh <em>không</em> phải người viết phần lớn code. Chỉ chạy hai bước đầu. Chưa code gì cả.</p>
+
+<p><strong>Bước 1 — Research.</strong> Mở phiên Claude Code mới trong repo đó:</p>
+<pre><code>Nghiên cứu codebase để phục vụ ticket sau: &lt;dán ticket&gt;.
+Chỉ mô tả hiện trạng: các file liên quan, luồng dữ liệu, điểm tích hợp,
+test hiện có. KHÔNG đề xuất giải pháp, KHÔNG bàn cách làm feature.
+Ghi kết quả vào /tmp/research.md, 100–300 dòng, kèm đường dẫn file:dòng.</code></pre>
+<p>Đọc <code>research.md</code>. Đánh dấu: câu nào sai, câu nào thiếu, câu nào lỡ đề xuất giải pháp. Sửa trực tiếp vào file.</p>
+
+<p><strong>Bước 2 — Propose.</strong> Gõ <code>/clear</code>, rồi:</p>
+<pre><code>Đọc /tmp/research.md và ticket: &lt;dán ticket&gt;.
+Đưa ra ĐÚNG HAI phương án khác nhau thật sự. Mỗi phương án gồm:
+tổng quan, thay đổi chính, trade-off, cách kiểm tra, câu hỏi mở.</code></pre>
+
+<p>Rồi trả lời bốn câu:</p>
+<ol>
+  <li>Research có lỡ đề xuất giải pháp không? Nếu có, nó có "mớm" trước cho một trong hai phương án không?</li>
+  <li>Anh đã sửa bao nhiêu chỗ sai trong research? Nếu không sửa, chỗ sai đó sẽ đi vào code ra sao?</li>
+  <li>Hai phương án có khác nhau thật sự không, hay một cái chỉ là biến thể của cái kia?</li>
+  <li>So với cách anh thường giao việc (một prompt dài), anh thấy mất gì và được gì?</li>
+</ol>
+
+<details>
+  <summary>Gợi ý (mở sau khi đã làm)</summary>
+  <p><strong>Câu 1.</strong> Đây là lỗi hay gặp nhất. Research lẫn đề xuất thì bước Propose bị neo vào đề xuất đó, và hai "phương án" dễ thành một. Nếu thấy, thêm vào prompt: "nếu thấy mình sắp đề xuất, hãy xóa câu đó".</p>
+  <p><strong>Câu 2.</strong> Đây là con số đáng giá nhất của bài tập. Mỗi chỗ anh sửa ở đây là một lần sửa code (hoặc một lần review dài) đã được tránh.</p>
+  <p><strong>Câu 3.</strong> Hai phương án tốt thường khác nhau ở một trục lớn: đồng bộ hay bất đồng bộ, sửa tại chỗ hay tách service, thêm bảng hay thêm cột. Nếu chỉ khác tên class, hãy yêu cầu lại: "phương án 2 phải khác phương án 1 ở cách lưu trữ / cách giao tiếp".</p>
+  <p><strong>Câu 4.</strong> Không có đáp án chuẩn. Ghi lại cảm nhận thật; bài 12 (eval) sẽ dạy cách đo thay vì cảm nhận.</p>
+</details>
+
+<h2>6. Kiểm tra cuối bài</h2>
+<p>Năm câu. Câu 5 nhắc lại một kết quả nghiên cứu, còn bốn câu đầu là tình huống.</p>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">File <code>research.md</code> do agent viết có câu: "Nên thêm Redis cache cho <code>OrderService</code>". Vấn đề là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Research lẫn đề xuất, làm lệch bước sau</li>
+    <li>Redis không phù hợp với hệ thống Java</li>
+    <li>File research còn quá ngắn so với chuẩn</li>
+    <li>Agent chưa đọc file CLAUDE.md của repo này</li>
+  </ul>
+  <p class="quiz-explain">Research chỉ được mô tả hiện trạng. Một đề xuất lọt vào đây sẽ neo bước Propose: agent (và cả anh) dễ coi Redis là điều hiển nhiên, nên hai phương án thành một. Chỗ rẻ nhất để gỡ hiểu lầm là lúc duyệt research.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Vì sao bước Propose yêu cầu <strong>đúng hai</strong> phương án, không phải bốn?</p>
+  <ul class="quiz-options">
+    <li data-correct>Thêm phương án thường chỉ là biến thể</li>
+    <li>Hai phương án thì tốn ít token hơn</li>
+    <li>Người review chỉ đọc nổi hai phương án</li>
+    <li>Model không sinh được quá hai phương án</li>
+  </ul>
+  <p class="quiz-explain">Theo Mihail Eric, xin thêm thì các phương án thêm chỉ là "reskins of the first" (bản sơn lại của cái đầu tiên). Hai là đủ để buộc model đưa ra hai hướng thật sự khác nhau, như hai bản phác thảo của hai kiến trúc sư thay vì một bản và ba bản vẽ lại.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Cần sửa một null check, và anh mô tả được diff trong một câu. Nên làm thế nào?</p>
+  <ul class="quiz-options">
+    <li data-correct>Giao thẳng cho agent, bỏ qua bước plan</li>
+    <li>Chạy đủ năm bước RePPIT cho chắc chắn</li>
+    <li>Viết spec bằng EARS trước khi sửa code</li>
+    <li>Mở Spec Kit và chạy lệnh specify trước</li>
+  </ul>
+  <p class="quiz-explain">Nghi thức phải tỉ lệ với độ lớn của việc. Claude Code khuyên bỏ qua plan khi tả được diff trong một câu. Dùng quy trình nặng cho việc nhỏ là "dùng búa tạ đập hạt dẻ" (Böckeler). Nhưng vẫn phải có bước kiểm tra, ví dụ một test tái hiện lỗi.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">RePPIT dặn không để chính instance đã viết code đi review code đó. Vì sao?</p>
+  <ul class="quiz-options">
+    <li data-correct>Nó thiên vị các lựa chọn của chính nó</li>
+    <li>Context lúc đó đã hết chỗ cho bước review</li>
+    <li>Review bằng cùng model thì tốn gấp đôi tiền</li>
+    <li>Instance cũ không còn đọc được code mới sửa</li>
+  </ul>
+  <p class="quiz-explain">Giống tự soát lỗi bài viết của mình: ta đọc thấy điều mình <em>định</em> viết, không phải điều đã viết. Instance đã viết code mang theo mọi giả định của nó trong context, nên sẽ bảo vệ lựa chọn cũ. Xóa sạch context hoặc đổi sang một model khác để có góc nhìn độc lập.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Nghiên cứu "Evaluating AGENTS.md" (2026) thấy loại nội dung nào trong context file là không giúp ích, dù hay được khuyên dùng?</p>
+  <ul class="quiz-options">
+    <li data-correct>Phần tổng quan cấu trúc của repo</li>
+    <li>Hướng dẫn cách chạy test từng module</li>
+    <li>Quy ước code khác thông lệ chung</li>
+    <li>Ví dụ code mẫu cho pattern chuẩn</li>
+  </ul>
+  <p class="quiz-explain">Tổng quan repo là thứ agent tự đọc code cũng suy ra được, nên chỉ tốn token. Nghiên cứu thấy context file hữu ích nhất khi mô tả quy ước <em>khác thường</em>. Áp vào CLAUDE.md của anh: cắt phần mô tả cấu trúc, giữ phần "ở repo này làm khác thông lệ ở chỗ…".</p>
+</div>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>Tóm lại</h2>
+<ul>
+  <li><strong>Việc lớn hỏng vì hai lý do:</strong> agent không biết nó thiếu thông tin, và context đầy thì agent kém đi.</li>
+  <li><strong>Prompt tốt = cụ thể + cho cách tự kiểm tra.</strong> Các mẹo gây sức ép với model đã lỗi thời.</li>
+  <li><strong>RePPIT:</strong> Research → Propose (đúng 2) → Plan → Implement → Test (instance khác). Duyệt tài liệu có đòn bẩy lớn hơn duyệt code; xóa context giữa các bước.</li>
+  <li><strong>Spec-driven:</strong> hữu ích để thống nhất team, nhưng dễ quá tay và dễ lỗi thời. Nghi thức phải tỉ lệ với độ lớn của việc.</li>
+</ul>
+<p>Bài 4 sang MCP: cách cắm thêm tool cho agent, từ lý thuyết tới một MCP server anh tự viết.</p>
+
+<h2>Đọc thêm</h2>
+<p><strong>Nguồn chính:</strong> <a href="https://mlops.community/blog/reppit-a-framework-to-ship-production-code-2-3x-faster">Mihail Eric — RePPIT</a>, bài gốc của giảng viên CS146S (khoảng 10 phút đọc). Sau đó đọc <a href="https://github.com/humanlayer/advanced-context-engineering-for-coding-agents/blob/main/ace-fca.md">ACE-FCA của Dex Horthy</a> để hiểu vì sao phải quản lý context chặt như vậy, và <a href="https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html">bài phân tích SDD của Böckeler</a> để có góc nhìn phản biện.</p>
+
+<div class="callout">
+  <span class="label">Báo lại cho tôi</span>
+  <p>(1) Điểm khởi động <strong>x/1</strong> kèm nguyên văn 2 câu tự diễn đạt. (2) Điểm cuối bài <strong>y/5</strong>; nếu sai, kèm đáp án anh đã chọn. (3) Trả lời 4 câu thực hành, nhất là <em>số chỗ anh phải sửa trong research</em>. Không cần gửi research.md nếu nó chứa code nội bộ. Chỗ nào chưa rõ, cứ hỏi tôi.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0002-giai-phau-system-prompt.html">← Bài 2: Giải phẫu system prompt</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0004-mcp-host-client-server-transport.html">Bài 4: MCP →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/diagram.js"></script>
+</body>
+</html>

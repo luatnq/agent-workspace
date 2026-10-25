@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Thiết kế tool cho agent</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Thiết kế & test tool · cập nhật 2026-10-13 · <a href="../lessons/0005-thiet-ke-tool-cho-agent.html">Bài 5</a> · <a href="mcp.html">MCP</a> · <a href="glossary.html">Glossary</a></p>
+
+<h1>Thiết kế tool cho agent</h1>
+<p class="subtitle">Tool là BFF cho model: viết cho người mới vào, chỉ biết tên tool, description, schema và output. Năm đòn bẩy là giả thuyết; eval mới là phán quyết.</p>
+
+<h2>Checklist năm đòn bẩy</h2>
+<table>
+  <tr><th>#</th><th>Đòn bẩy</th><th>Câu hỏi khi review</th><th>Dấu hiệu sai</th></tr>
+  <tr><td>1</td><td>Tác vụ, không endpoint</td><td>Mỗi tool ứng với một việc người dùng thật sự làm?</td><td>Bọc 1:1 REST; <code>list_*</code> trả hết để model tự lọc</td></tr>
+  <tr><td>2</td><td>Tên &amp; tham số</td><td>Có tiền tố chung? Tham số đọc là hiểu (<code>user_id</code>, <code>topic_slug</code>)? Giá trị hữu hạn đã là enum?</td><td><code>user</code>, <code>topic</code>, <code>data</code>; string tự do cho thứ có 3 giá trị</td></tr>
+  <tr><td>3</td><td>Description</td><td>Nói làm gì, <em>khi nào</em> dùng, đi cùng tool nào?</td><td>Một dòng kiểu Javadoc; không nhắc tool kế tiếp</td></tr>
+  <tr><td>4</td><td>Output ít mà đắt</td><td>Chỉ trường có giá trị? Định danh có nghĩa? Có phân trang / <code>response_format</code>?</td><td>UUID, <code>mime_type</code>, JSON 40 trường; chạm giới hạn 25k token của Claude Code</td></tr>
+  <tr><td>5</td><td>Lỗi chỉ cách sửa</td><td>Lỗi nghiệp vụ đi bằng tool execution error, message liệt kê giá trị hợp lệ?</td><td>Traceback, mã lỗi trơn; Python SDK: <code>raise ValueError</code> → model chỉ thấy "Error executing tool"</td></tr>
+</table>
+<p class="small">Nguồn: <a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Anthropic — Writing effective tools for agents</a> (2025-09-11); <a href="https://www.reillywood.com/blog/apis-dont-make-good-mcp-tools/">Reilly Wood — APIs don't make good MCP tools</a> (2025-08-05). Số liệu: concise 72 vs detailed 206 token (Anthropic); CSV ≈ ½ token so với JSON (Reilly Wood).</p>
+
+<h2>Đặt thông tin ở đâu</h2>
+<table>
+  <tr><th>Chỗ</th><th>Model thấy khi nào</th><th>Hợp với</th></tr>
+  <tr><td>Description / schema (enum)</td><td>Ngay khi nạp tool, không tốn lần gọi</td><td>Tập giá trị nhỏ, ít đổi (vài chủ đề, vài môi trường)</td></tr>
+  <tr><td>Tool khám phá (<code>list_*</code>, <code>search_*</code>)</td><td>Sau một lần gọi</td><td>Tập lớn hoặc đổi liên tục (khách hàng, ticket)</td></tr>
+  <tr><td>Message lỗi</td><td>Sau một lần gọi sai</td><td>Lưới an toàn, không phải đường chính</td></tr>
+</table>
+
+<h2>Hai tầng test</h2>
+<table>
+  <tr><th></th><th>Unit test (hợp đồng server)</th><th>Eval (hành vi model)</th></tr>
+  <tr><td>Kiểm tra</td><td>Schema, message lỗi, kích thước output</td><td>Đúng / số lần gọi / số lỗi / token / thời gian</td></tr>
+  <tr><td>Chạy khi</td><td>Mỗi commit, trong CI</td><td>Khi đổi thiết kế tool</td></tr>
+  <tr><td>Kết quả</td><td>Pass / fail, tất định</td><td>Con số, có nhiễu; giữ holdout set</td></tr>
+  <tr><td>Công cụ</td><td><code>mcp.Client(server)</code> in-memory + pytest</td><td><code>claude -p … --mcp-config --strict-mcp-config --output-format stream-json</code> + jq</td></tr>
+</table>
+
+<h3>Mẫu unit test (Python SDK 2.x, đã chạy với 2.3.0)</h3>
+<pre><code>@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+@pytest.fixture
+async def client(learn_dir):
+    async with Client(build_server(learn_dir), raise_exceptions=True) as c:
+        yield c
+
+@pytest.mark.anyio
+async def test_loi_co_goi_y(client):
+    r = await client.call_tool("learn_get_progress", {"topic_slug": "x"})
+    assert r.is_error and "modern-software-developer" in r.content[0].text</code></pre>
+<p class="small">Server phải dựng qua factory (<code>build_server(dir)</code>), không đọc <code>sys.argv</code> ở cấp module. <code>raise_exceptions=True</code> chỉ dùng trong test. Nguồn: <a href="https://py.sdk.modelcontextprotocol.io/v2/get-started/testing/">SDK v2 — Testing</a>.</p>
+
+<h3>Đếm trong trace stream-json</h3>
+<pre><code># số lần gọi tool MCP
+jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name' run.jsonl | grep -c mcp__
+# số lỗi tool
+jq -r 'select(.type=="user") | .message.content[]? | select(.type=="tool_result" and .is_error==true) | "E"' run.jsonl | wc -l</code></pre>
+
+<h2>Mini-eval bài 5 (2026-10-13, n = 6 phiên mỗi bản)</h2>
+<table>
+  <tr><th>Bản</th><th>Gọi tool</th><th>Lỗi</th><th>Đúng</th><th>Token input TB</th></tr>
+  <tr><td>v1: 1 tool, <code>topic</code> string</td><td>12</td><td>4</td><td>6/6</td><td>~117k</td></tr>
+  <tr><td>v2: + <code>list_topics</code>, "gọi trước"</td><td>13</td><td>0</td><td>6/6</td><td>~128k</td></tr>
+  <tr><td>v3: 1 tool, slug là enum + tên khóa trong description</td><td>7</td><td>0</td><td>6/6</td><td>~95k</td></tr>
+</table>
+<p class="small">Bài học: v2 hết lỗi nhưng không ít lần gọi hơn, vì đã dời chi phí sang một lần gọi bắt buộc. Nhìn nhiều chỉ số và đọc trace. Mẫu nhỏ, chỉ cho thấy hướng.</p>
+
+</main>
+</body>
+</html>

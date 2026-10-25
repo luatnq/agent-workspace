@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Tool-use loop</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">LLM Foundation · Reference · cập nhật 2026-09-20 · nguồn: <a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview">Tool use overview</a>, <a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls">Handle tool calls</a>, <a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Writing tools for agents</a></p>
+
+<h1>Tool-use loop</h1>
+<p class="subtitle">Vòng lặp, hình dạng message, luật format, xử lý lỗi, và checklist thiết kế tool. Đi kèm <a href="../lessons/0003-tool-use-loop.html">Bài 3</a>.</p>
+
+<h2>Vòng lặp</h2>
+<pre>loop (có guard: max_iterations, token budget):
+  resp = call(model, tools, messages)
+  messages += assistant(resp.content)            # giữ nguyên mọi block, kể cả thinking
+  if resp.stop_reason == "max_tokens": xử lý cụt, không chạy tool
+  if resp.stop_reason != "tool_use": break        # end_turn | refusal | pause_turn…
+  results = run_all_concurrently(resp.tool_use_blocks)
+  messages += user(results)                       # MỘT message, tool_result đứng TRƯỚC text</pre>
+
+<h2>Hình dạng block</h2>
+<table>
+  <tr><th>Block</th><th>Nằm trong</th><th>Trường</th></tr>
+  <tr><td>tool definition</td><td><code>tools[]</code> của request</td><td><code>name</code>, <code>description</code>, <code>input_schema</code> (JSON Schema), tùy chọn <code>strict: true</code></td></tr>
+  <tr><td><code>tool_use</code></td><td>message <em>assistant</em></td><td><code>id</code>, <code>name</code>, <code>input</code></td></tr>
+  <tr><td><code>tool_result</code></td><td>message <em>user</em></td><td><code>tool_use_id</code>, <code>content</code> (string | text/image/document blocks), <code>is_error?</code></td></tr>
+</table>
+<p>Không có role <code>tool</code>. Tool result về mặt model là "user nói cho tôi" → nội dung ngoài tầm kiểm soát là untrusted.</p>
+
+<h2>Luật format (vi phạm → 400)</h2>
+<ol>
+  <li><code>tool_result</code> phải ở message ngay sau message chứa <code>tool_use</code>; không chen message khác.</li>
+  <li>Mọi <code>tool_use</code> phải có đúng một <code>tool_result</code> khớp <code>tool_use_id</code> — kể cả khi tool lỗi.</li>
+  <li>Trong user message, các <code>tool_result</code> đứng trước mọi text block.</li>
+  <li>Nhiều <code>tool_use</code> trong một response → tất cả result trong <em>một</em> user message (tách ra: dạy model bỏ parallel).</li>
+  <li>Có thinking: trả lại block thinking nguyên vẹn (có signature) cùng tool result.</li>
+</ol>
+
+<h2><code>tool_choice</code></h2>
+<table>
+  <tr><th>Giá trị</th><th>Hành vi</th></tr>
+  <tr><td><code>auto</code> (mặc định)</td><td>Model tự quyết; thêm <code>disable_parallel_tool_use: true</code> để tối đa một call/lượt</td></tr>
+  <tr><td><code>any</code></td><td>Bắt buộc gọi một tool nào đó</td></tr>
+  <tr><td><code>tool</code> + <code>name</code></td><td>Bắt buộc gọi tool này (structured output nay ưu tiên <code>output_config.format</code>)</td></tr>
+  <tr><td><code>none</code></td><td>Không gọi tool</td></tr>
+</table>
+<p>Không gọi tool như kỳ vọng → thêm vào system prompt: "Use the tools to investigate before responding." Gọi quá nhiều → "Use your judgment about whether to call a tool or respond directly."</p>
+
+<h2>Xử lý lỗi</h2>
+<table>
+  <tr><th>Tình huống</th><th>Làm gì</th></tr>
+  <tr><td>Tool ném lỗi (500, timeout)</td><td><code>is_error: true</code> + message nói cái gì sai và nên thử gì ("Rate limit exceeded. Retry after 60 seconds.")</td></tr>
+  <tr><td>Thiếu / sai param</td><td><code>is_error: true</code> + "Missing required 'location'"; model retry 2–3 lần. Phòng ngừa: <code>strict: true</code>, description rõ</td></tr>
+  <tr><td>Result quá lớn</td><td>Cắt (Claude Code: trần 25k token) + kèm hướng dẫn cách hỏi hẹp hơn; hoặc pagination / <code>response_format</code></td></tr>
+  <tr><td>Hành động không hoàn tác</td><td>Guard ở <strong>app</strong> (confirm, allowlist, dry-run), không ở prompt</td></tr>
+  <tr><td>Loop không kết thúc</td><td>max_iterations, ngân sách token, phát hiện gọi lặp cùng tool cùng input</td></tr>
+</table>
+
+<h2>Chi phí mỗi vòng</h2>
+<ul>
+  <li>Tool definitions: gửi lại mọi request.</li>
+  <li>System prompt tool use: API tự chèn (~286 token Opus 5 / ~354 Sonnet 5 với <code>auto</code>; ~120 token hơn với <code>any</code>/<code>tool</code>).</li>
+  <li><code>tool_use</code>: output token. <code>tool_result</code>: input token, tồn tại đến hết hội thoại.</li>
+  <li>Server tools: web search $10 / 1,000 lượt; web fetch chỉ tính token.</li>
+</ul>
+
+<h2>Checklist thiết kế tool</h2>
+<ul>
+  <li>[ ] Gộp theo workflow (<code>schedule_event</code>), không wrap từng endpoint</li>
+  <li>[ ] Search có limit thay vì list unbounded</li>
+  <li>[ ] Namespace: <code>hệthống_resource_hànhđộng</code></li>
+  <li>[ ] Trả tên/mã người đọc được; UUID chỉ khi bước sau cần</li>
+  <li>[ ] <code>response_format: concise | detailed</code></li>
+  <li>[ ] Pagination / truncation với default hợp lý; thông báo cắt kèm hướng dẫn</li>
+  <li>[ ] Error message có hành động tiếp theo</li>
+  <li>[ ] Description viết như cho new hire; tên param không mơ hồ (<code>user_id</code>)</li>
+  <li>[ ] Eval bằng task thật nhiều bước; đo accuracy, số call, token, error; đọc transcript</li>
+</ul>
+
+<nav class="lesson-nav">
+  <a href="../lessons/0003-tool-use-loop.html">← Bài 3</a>
+  <a href="glossary.html">Glossary →</a>
+</nav>
+
+</main>
+</body>
+</html>

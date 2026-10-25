@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Token economics</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">LLM Foundation · Reference · cập nhật 2026-09-20 · nguồn: <a href="https://platform.claude.com/docs/en/about-claude/pricing">Pricing</a>, <a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Context windows</a>, <a href="https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/reduce-latency">Reducing latency</a></p>
+
+<h1>Token economics</h1>
+<p class="subtitle">Bốn công thức và một bảng hệ số để ước lượng cost/latency của một tính năng LLM trong 2 phút. Đi kèm <a href="../lessons/0001-llm-la-ham-stateless-tren-token.html">Bài 1</a>.</p>
+
+<h2>Mental model</h2>
+<ul>
+  <li><strong>Stateless.</strong> <code>f(context) → tokens</code>. Mỗi lượt gửi lại toàn bộ lịch sử. "Memory" là việc của app.</li>
+  <li><strong>Context window = working memory.</strong> Trọng số = "vague recollection". Muốn model biết chắc → đưa vào context.</li>
+  <li><strong>Mọi thứ đều tính vào context:</strong> system prompt, messages, tool definitions, tool results, ảnh/PDF, thinking, output. Cache không đổi điều này.</li>
+  <li><strong>Context rot:</strong> càng nhiều token, accuracy/recall càng giảm. 1M là trần, không phải mục tiêu.</li>
+</ul>
+
+<h2>Quy đổi</h2>
+<table>
+  <tr><th>Đại lượng</th><th>Xấp xỉ</th><th>Ghi chú</th></tr>
+  <tr><td>1 token</td><td>≈ 4 ký tự ≈ 0.75 từ (tiếng Anh)</td><td>Tiếng Việt, code, JSON tốn hơn. Thử <a href="https://tiktokenizer.vercel.app/">Tiktokenizer</a></td></tr>
+  <tr><td>Tokenizer Claude 4.7+</td><td>≈ +30% token so với 4.6 trở về trước</td><td>Đổi model có thể đổi hóa đơn dù giá/token giữ nguyên</td></tr>
+  <tr><td>Trang web 10 kB</td><td>≈ 2,500 token</td><td>Từ doc web fetch pricing</td></tr>
+  <tr><td>Trang doc 100 kB</td><td>≈ 25,000 token</td><td></td></tr>
+  <tr><td>PDF paper 500 kB</td><td>≈ 125,000 token</td><td></td></tr>
+</table>
+
+<h2>Công thức</h2>
+<pre>cost_lượt      = in × p_in + out × p_out
+in_lượt_k      = system + Σ(lịch sử k−1 lượt) + user_k
+in_hội_thoại   = n × system + (u + o) × n(n−1)/2 + n × u     # n lượt, u/o = user/output tb
+latency_lượt   ≈ TTFT(∝ input, nhẹ hơn khi cache hit) + out / tốc_độ_sinh</pre>
+<p>Ba hệ quả: (1) trong hội thoại dài, <strong>input</strong> thường là phần cost lớn nhất dù giá/token rẻ hơn output 5 lần; (2) <strong>output</strong> quyết định latency; (3) <strong>thinking = output</strong> về cả cost lẫn latency.</p>
+
+<h2>Giá (USD / MTok, Claude API, 2026-09)</h2>
+<table>
+  <tr><th>Model</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache write 5m</th><th class="num">Cache read</th><th class="num">Batch in/out</th></tr>
+  <tr><td>Opus 5.5</td><td class="num">4</td><td class="num">20</td><td class="num">5</td><td class="num">0.20 (0.05×)</td><td class="num">2 / 10</td></tr>
+  <tr><td>Opus 5</td><td class="num">5</td><td class="num">25</td><td class="num">6.25</td><td class="num">0.50</td><td class="num">2.50 / 12.50</td></tr>
+  <tr><td>Sonnet 5</td><td class="num">2</td><td class="num">10</td><td class="num">2.50</td><td class="num">0.20</td><td class="num">1 / 5</td></tr>
+  <tr><td>Haiku 4.5</td><td class="num">1</td><td class="num">5</td><td class="num">1.25</td><td class="num">0.10</td><td class="num">0.50 / 2.50</td></tr>
+</table>
+<p><em>Cập nhật 2026-09-26:</em> hệ số cache read không còn cố định 0.1× cho mọi model; xem <a href="context-and-caching.html">Context &amp; caching</a>.</p>
+<p>Context: 1M token cho Opus 5 / Sonnet 5 (và 4.6+), 200k cho Haiku 4.5. Output tối đa 128k/request trên model 1M. Long context không có phụ phí.</p>
+
+<h2>Hệ số đòn bẩy</h2>
+<table>
+  <tr><th>Đòn bẩy</th><th class="num">Hệ số</th><th>Giảm cost?</th><th>Giảm latency?</th><th>Điều kiện / bẫy</th></tr>
+  <tr><td>Prompt cache read</td><td class="num">0.025–0.1×</td><td>Có, mạnh</td><td>TTFT</td><td>Prefix phải giống hệt byte; hit trong TTL (5 phút / 1 giờ). Write 1.25× / 2× — gọi thưa hơn TTL là <em>lỗ</em></td></tr>
+  <tr><td>Batch API</td><td class="num">0.5×</td><td>Có</td><td>Không (chậm hơn)</td><td>Chỉ cho việc không cần trả lời ngay</td></tr>
+  <tr><td>Đổi Opus → Sonnet</td><td class="num">0.4×</td><td>Có</td><td>Có</td><td>Phải đo chất lượng bằng eval, không đoán</td></tr>
+  <tr><td>Đổi Opus → Haiku</td><td class="num">0.2×</td><td>Có</td><td>Có, mạnh</td><td>Như trên</td></tr>
+  <tr><td>Rút ngắn output</td><td class="num">tùy</td><td>Ít (output thường là phần nhỏ)</td><td>Có, tuyến tính</td><td>Yêu cầu số câu/đoạn, không phải số từ (model đếm token, không đếm từ)</td></tr>
+  <tr><td>Streaming</td><td class="num">—</td><td>Không</td><td>Chỉ <em>cảm nhận</em></td><td>Nên bật cho mọi UI tương tác</td></tr>
+  <tr><td>Bật thinking / tăng effort</td><td class="num">&gt;1×</td><td>Tăng</td><td>Tăng</td><td>Là quyết định cost/latency có chủ đích, không phải cờ miễn phí</td></tr>
+</table>
+
+<h2>Hành vi khi tràn context</h2>
+<table>
+  <tr><th>Tình huống</th><th>Kết quả</th><th>App phải làm gì</th></tr>
+  <tr><td>Input đã vượt window</td><td><code>400 invalid_request_error</code> ("prompt is too long")</td><td>Đếm token trước khi gửi (token counting API); cắt/tóm tắt lịch sử</td></tr>
+  <tr><td>Input + max_tokens vượt window (model 4.5+)</td><td>Chạy, dừng với <code>stop_reason: "model_context_window_exceeded"</code></td><td>Kiểm tra stop_reason, không giả định output hoàn chỉnh</td></tr>
+  <tr><td>Output chạm max_tokens</td><td><code>stop_reason: "max_tokens"</code>, cắt giữa chừng</td><td>Xử lý output cụt, hoặc nâng max_tokens</td></tr>
+</table>
+
+<h2>Non-determinism</h2>
+<p>Temperature 0 <strong>không</strong> đảm bảo output giống hệt giữa các lần gọi (glossary chính thức). Test LLM bằng tiêu chí (eval), không bằng string equality.</p>
+
+<nav class="lesson-nav">
+  <a href="../lessons/0001-llm-la-ham-stateless-tren-token.html">← Bài 1</a>
+  <span class="disabled">Glossary: sau bài 2</span>
+</nav>
+
+</main>
+</body>
+</html>

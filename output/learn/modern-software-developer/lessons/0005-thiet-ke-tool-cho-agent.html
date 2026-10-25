@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 5 — Thiết kế tool cho agent</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0005 · Module 2 (CS146S W2) · 2026-10-13 · ~40 phút · <a href="0004-mcp-host-client-server-transport.html">Bài 4</a> · <a href="../reference/tool-design.html">Cheat sheet thiết kế tool</a> · <a href="../reference/mcp.html">Cheat sheet MCP</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Thiết kế tool cho agent: người dùng là model</h1>
+<p class="subtitle">Ở bài 4, anh viết được một MCP server chạy đúng. Nhưng "chạy đúng" chưa phải là "dùng tốt". Hôm nay tôi chạy ba phiên bản của cùng một tool, mỗi bản 6 phiên Claude Code, và đếm xem model phải gọi bao nhiêu lần mới ra câu trả lời. Kết quả có một chỗ bất ngờ, và chỗ đó chính là bài học.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Review một bộ tool theo năm đòn bẩy thiết kế. Viết unit test cho tool MCP bằng in-memory client, chạy trong vài trăm mili giây, không cần agent. Chạy một mini-eval với agent thật và đọc kết quả mà không tự lừa mình.</p>
+</div>
+
+<h2>0. Khởi động</h2>
+<p>Một câu ôn bài 4, và một câu tự diễn đạt lần thứ ba về ReAct. Hai lần trước (bài 2, bài 3) tôi chưa nhận được câu của anh, nên lần này nó gắn thẳng vào nội dung hôm nay.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Bài 4 chưa có kết quả, nên chưa có LR-0004. Câu 1 vì thế là câu ôn giãn cách cho điểm quan trọng nhất của bài 4. Kết quả bài 4 gửi chung với bài này ở mục cuối.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Trong Python SDK 2.x, tool của anh <code>raise ValueError("Không có chủ đề 'x'. Các chủ đề: a, b")</code>. Model đọc được gì trong tool_result?</p>
+  <ul class="quiz-options">
+    <li data-correct>Chỉ một dòng chung chung "Error executing tool", mất hết message</li>
+    <li>Nguyên văn message, kèm danh sách chủ đề a và b</li>
+    <li>Không gì cả, vì server crash và kết nối bị đóng</li>
+    <li>Một protocol error JSON-RPC mã -32603 kèm theo cả stack trace</li>
+  </ul>
+  <p class="quiz-explain">SDK coi exception không phải <code>ToolError</code> là lỗi ngoài dự kiến và giấu nội dung đi. Model chỉ thấy <code>Error executing tool &lt;tên&gt;</code>. Kết nối vẫn sống, đây vẫn là tool execution error (<code>isError: true</code>), chỉ là message đã bị thay. Mục 3 hôm nay sẽ biến đúng điều này thành một test tự động.</p>
+</div>
+
+<details>
+  <summary>Tự diễn đạt (viết ra trước, rồi mới mở): trong 2–3 câu, ReAct là gì, và vì sao message lỗi của tool là một phần của vòng ReAct chứ không chỉ là chuyện logging?</summary>
+  <p>ReAct là vòng lặp xen kẽ nghĩ → gọi tool → quan sát kết quả, rồi nghĩ tiếp dựa trên quan sát đó. Tool_result, kể cả khi là lỗi, chính là "quan sát" mà bước nghĩ tiếp theo dựa vào. Message lỗi chỉ rõ cách sửa thì bước sau sửa đúng; message bị nuốt thì bước sau chỉ còn đoán. Nói cách khác, message lỗi là input của model, không phải output cho người vận hành.</p>
+  <p>So với câu của anh: có ý "quan sát là input của bước nghĩ tiếp theo" không?</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Một ví dụ trước: ba lần gọi cho một câu hỏi</h2>
+
+<p>Tôi lấy đúng server <code>learn</code> của bài 4 (bản dùng <code>ToolError</code>, tức là bản "đúng"), chạy Claude Code với câu hỏi <em>"Tôi đang học tới đâu ở chủ đề mcp?"</em>. Đây là các lần gọi tool, lấy từ trace:</p>
+
+<pre><code>learning_progress {"topic":"mcp"}                         → lỗi: không có chủ đề 'mcp'. Các chủ đề hiện có: llm-foundation, marketing-foundation, modern-software-developer
+learning_progress {"topic":"modern-software-developer"}   → 4 bài, mới nhất 0004-mcp-…
+learning_progress {"topic":"llm-foundation"}              → 8 bài, …</code></pre>
+
+<p>Câu trả lời cuối cùng đúng. Nhưng thử đoán trước khi đọc tiếp: <strong>vì sao model phải thử ba lần</strong>, dù tool đã trả message lỗi tử tế?</p>
+
+<p>Vì tool không cho model biết thứ nó cần nhất: <em>mỗi chủ đề là gì</em>. Model chỉ có tên thư mục. Nó phải đoán "mcp" là một slug, sai, rồi lần lượt mở từng thư mục để xem cái nào có MCP. Tool này được viết như một API cho lập trình viên, người đã biết sẵn danh sách slug. Còn người dùng thật của nó là model, một người mới vào, chưa biết gì.</p>
+
+<p>Anthropic gọi đây là lỗi phổ biến nhất khi viết tool:<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Ken Aizawa, <a href="https://www.anthropic.com/engineering/writing-tools-for-agents">"Writing effective tools for agents — with agents"</a>, Anthropic Engineering, 2025-09-11. Đây là nguồn chính của bài.</aside>
+
+<blockquote>
+  <p>A common error we've observed is tools that merely wrap existing software functionality or API endpoints.</p>
+  <p><strong>Tạm dịch:</strong> Một lỗi hay gặp là viết tool chỉ bọc lại chức năng hoặc endpoint API có sẵn.</p>
+</blockquote>
+
+<p>Với dân backend, có một khái niệm rất gần: <strong>BFF (Backend-for-Frontend)</strong>. Anh không đưa thẳng 14 endpoint của core banking cho app mobile. Anh dựng một lớp BFF gộp dữ liệu, cắt bớt trường, đổi mã nội bộ thành thứ màn hình hiển thị được. Tool cho agent là BFF cho model.</p>
+
+<p>Phép so sánh hỏng ở hai chỗ. Thứ nhất, frontend developer đọc tài liệu API một lần rồi nhớ; model đọc lại description <strong>mỗi phiên</strong>, và mỗi chữ trong đó tốn token. Thứ hai, client của BFF là code chạy đúng y như được viết; client của tool là một bộ suy luận xác suất, nên cùng một tool có thể được gọi theo nhiều cách khác nhau. Vì vậy tool phải được <em>đo</em>, không chỉ được <em>test</em> (mục 3).</p>
+
+<p><strong>Điều cần nhớ:</strong> tool viết cho model, không cho lập trình viên. Model không biết gì ngoài tên tool, description, schema và những gì tool trả về. Thứ gì nó cần để gọi đúng ở lần đầu thì phải nằm trong đó.</p>
+
+<h2>2. Năm đòn bẩy thiết kế</h2>
+
+<p>Từ bài của Anthropic và bài <a href="https://www.reillywood.com/blog/apis-dont-make-good-mcp-tools/">"APIs don't make good MCP tools"</a> của Reilly Wood (bài đọc CS146S), tôi gom lại thành năm đòn bẩy. Đây cũng là checklist anh dùng ở phần thực hành, và có bản rút gọn trong <a href="../reference/tool-design.html">cheat sheet</a>.</p>
+
+<h3>(1) Chọn tool theo tác vụ, không theo endpoint</h3>
+<p>Ví dụ trong bài của Anthropic: thay vì <code>list_contacts</code> trả toàn bộ danh bạ để model tự lọc, viết <code>search_contacts</code>. Thay vì để model gọi <code>list_users</code>, <code>list_events</code>, <code>create_event</code> lần lượt, viết một tool <code>schedule_event</code>. Lời khuyên gốc: <em>"building a few thoughtful tools targeting specific high-impact workflows"</em> (tạm dịch: "xây vài tool được cân nhắc kỹ, nhắm vào những luồng việc có tác động lớn").</p>
+<p>Lý do không chỉ là gọn. Reilly Wood nhắc: mỗi tool và description của nó chiếm chỗ trong context, và <em>"many models struggle with accurate tool calling well before that number"</em> (tạm dịch: "nhiều model đã gọi tool kém chính xác từ lâu trước khi chạm giới hạn số tool").</p>
+
+<h3>(2) Tên và tham số không thể hiểu sai</h3>
+<ul>
+  <li><strong>Namespace</strong>: gom tool cùng nhóm dưới một tiền tố, ví dụ <code>asana_search</code>, <code>jira_search</code>. Khi agent có 60 tool từ 8 server, tiền tố giúp model phân biệt ranh giới. Anthropic ghi nhận cách đặt tiền tố hay hậu tố có <em>"non-trivial effects"</em> (tạm dịch: "ảnh hưởng không nhỏ") và nên chọn bằng eval.</li>
+  <li><strong>Tên tham số tự giải thích</strong>: <em>"instead of a parameter named <code>user</code>, try a parameter named <code>user_id</code>"</em> (tạm dịch: "thay vì tham số tên <code>user</code>, dùng <code>user_id</code>"). Ở bài 4, <code>topic</code> mơ hồ: là tên khóa học, từ khóa, hay slug thư mục? <code>topic_slug</code> thì không.</li>
+  <li><strong>Để schema làm việc</strong>: tham số chỉ có vài giá trị hợp lệ thì khai <code>Literal[...]</code>, SDK sinh ra <code>enum</code> trong schema. Giới hạn số thì dùng <code>Field(ge=…, le=…)</code>. SDK kiểm tra trước khi hàm của anh chạy: tài liệu ghi <em>"Constraints are not decoration"</em> (tạm dịch: "ràng buộc không phải để trang trí").<span class="sidenote-ref"></span></li>
+</ul>
+<aside class="sidenote"><a href="https://py.sdk.modelcontextprotocol.io/v2/servers/tools/">Python SDK v2 — Tools</a>. Giống Bean Validation (<code>@Min</code>, <code>@Pattern</code>) trên DTO của Spring: request sai bị chặn trước khi vào service.</aside>
+
+<h3>(3) Description viết như hướng dẫn cho người mới</h3>
+<p>Description không phải Javadoc. Nó trả lời ba câu: tool này làm gì, <em>khi nào</em> nên dùng, và tool này đi cùng tool nào. Reilly Wood có một mẫu hay: tool <code>search_cities</code> trả kết quả kèm gợi ý <em>"try calling get_city_details with the city_name parameter"</em> (tạm dịch: "hãy gọi tiếp get_city_details với tham số city_name"). Tool tự chỉ đường cho bước tiếp theo.</p>
+
+<h3>(4) Output: ít mà đắt</h3>
+<ul>
+  <li><em>"return only high signal information"</em> (tạm dịch: "chỉ trả về thông tin có giá trị cao"). Bỏ <code>uuid</code>, <code>mime_type</code>, URL ảnh thumbnail. Anthropic thấy chỉ riêng việc đổi UUID thành tên người đọc được đã giảm hallucination khi model trích lại mã.</li>
+  <li>Cho model chọn độ chi tiết: một tham số <code>response_format</code> (<code>"concise"</code> / <code>"detailed"</code>). Trong ví dụ của Anthropic, bản chi tiết tốn 206 token, bản gọn 72 token.</li>
+  <li>Định dạng: Reilly Wood đo được CSV tốn khoảng một nửa token so với JSON cho cùng dữ liệu, vì JSON lặp lại tên trường ở mỗi record. Gợi ý: <em>"CSV, TSV, or YAML (for nested data) are better choices than JSON"</em> (tạm dịch: "CSV, TSV, hoặc YAML cho dữ liệu lồng nhau, thường tốt hơn JSON").</li>
+  <li>Phân trang, lọc, cắt bớt, có giá trị mặc định hợp lý. Claude Code mặc định cắt output tool ở 25.000 token (đã gặp ở bài 4).</li>
+</ul>
+
+<h3>(5) Message lỗi chỉ cách sửa</h3>
+<p>Đã học ở bài 4: lỗi nghiệp vụ đi bằng <code>ToolError</code>. Hôm nay thêm một tầng: message phải <em>"clearly communicate specific and actionable improvements"</em> (tạm dịch: "nói rõ cần sửa cụ thể điều gì"), không phải mã lỗi hay traceback. Mẹo đơn giản nhất: lỗi do giá trị sai thì liệt kê luôn các giá trị hợp lệ.</p>
+
+<p><strong>Điều cần nhớ:</strong> năm đòn bẩy là chọn tool theo tác vụ, đặt tên không hiểu sai được, description chỉ khi nào dùng, output ít mà đắt, lỗi chỉ cách sửa. Nhưng đây là giả thuyết thiết kế. Có tốt hơn thật không thì phải đo.</p>
+
+<h2>3. Test tool: hai tầng</h2>
+
+<p>Đến đây anh có thể tự hỏi: tool là code, vậy test như code bình thường là đủ? Chưa đủ, vì tool có hai loại "đúng" khác nhau.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+  subgraph U["Tầng 1 — Unit test: hợp đồng của tool (tất định)"]
+    direction LR
+    U1["pytest"] --> U2["in-memory Client"] --> U3["server object<br/>không subprocess, không model"]
+  end
+  subgraph E["Tầng 2 — Eval: model có dùng tốt không (xác suất)"]
+    direction LR
+    E1["bộ task thật"] --> E2["agent thật<br/>claude -p"] --> E3["đo: đúng / số lần gọi /<br/>lỗi / token"]
+  end
+  U ~~~ E
+</pre>
+<figcaption>Hình 1. Hai tầng test cho tool. Nhìn cột cuối của mỗi hàng: tầng 1 kiểm tra những gì <em>server</em> hứa (schema, message lỗi, kích thước output), chạy trong CI mỗi commit. Tầng 2 kiểm tra <em>hành vi của model</em> khi dùng tool, chạy khi đổi thiết kế, và kết quả là con số, không phải pass/fail.</figcaption>
+</figure>
+
+<h3>Tầng 1: unit test qua in-memory client</h3>
+<p>Python SDK v2 có <code>Client</code> nhận thẳng server object: <em>"pass it your server object and it talks to it directly"</em> (tạm dịch: "đưa cho nó server object, nó nói chuyện trực tiếp với server"). Không cần process con, không cần port.<span class="sidenote-ref"></span> Một test kiểm tra message lỗi trông thế này:</p>
+<aside class="sidenote"><a href="https://py.sdk.modelcontextprotocol.io/v2/get-started/testing/">Python SDK v2 — Testing</a>. <code>raise_exceptions=True</code> để lỗi ngoài thân tool hiện nguyên message; tài liệu dặn chỉ bật trong test. Tôi đã chạy đoạn dưới với <code>mcp</code> 2.3.0, pytest 9.1.1: 3 test pass trong 0,39 giây.</aside>
+
+<pre><code>@pytest.mark.anyio
+async def test_sai_slug_tra_ve_loi_model_sua_duoc(client):
+    r = await client.call_tool("learn_get_progress", {"topic_slug": "mcp-co-ban"})
+    assert r.is_error
+    assert "modern-software-developer (The Modern Software Developer)" in r.content[0].text</code></pre>
+
+<p>Để ý test này kiểm tra cái gì: không phải "hàm chạy đúng" mà là "<strong>model nhận được đủ thông tin để sửa</strong>". Tôi đổi <code>ToolError</code> thành <code>ValueError</code> rồi chạy lại: test đỏ ngay, với <code>assert '…' in 'Error executing tool learn_get_progress'</code>. Lỗ của bài 4 giờ có lưới bắt trong CI.</p>
+
+<p>Một chuyện nhỏ nhưng thật: server bài 4 đọc <code>LEARN_DIR</code> từ <code>sys.argv</code> ở cấp module, nên không test được với thư mục giả. Phải sửa thành hàm <code>build_server(learn_dir)</code>. Đây là chuyện quen với dân Spring: inject qua constructor thay vì đọc <code>System.getProperty</code> trong static field.</p>
+
+<h3>Tầng 2: eval với agent thật</h3>
+<p>Unit test không trả lời được câu "model có gọi đúng ngay lần đầu không". Cho câu đó, Anthropic đề xuất chạy agent trên bộ task thật, và thu các chỉ số: <em>"total runtime of individual tool calls and tasks, the total number of tool calls, the total token consumption, and tool errors"</em> (tạm dịch: "thời gian chạy của từng lần gọi tool và từng task, tổng số lần gọi tool, tổng token tiêu thụ, và số lỗi tool"), cộng với độ chính xác của câu trả lời. Họ cũng giữ một holdout set để không "học thuộc" bộ eval của chính mình, giống tách train/test.</p>
+
+<p>Hôm nay tôi chạy một mini-eval đúng kiểu đó. Ba câu hỏi ("chủ đề mcp", "khóa marketing", "khóa CS146S"), mỗi câu 2 lần, cho ba phiên bản server:</p>
+
+<table>
+  <tr><th>Bản</th><th>Thiết kế</th></tr>
+  <tr><td><strong>v1</strong></td><td>Server bài 4: một tool <code>learning_progress(topic)</code>, <code>ToolError</code> liệt kê slug.</td></tr>
+  <tr><td><strong>v2</strong></td><td>Áp checklist "theo sách": tiền tố <code>learn_</code>, <code>topic_slug</code> có mô tả, thêm tool <code>learn_list_topics</code> trả TSV slug + tên khóa, description dặn "gọi tool này trước nếu chưa chắc slug".</td></tr>
+  <tr><td><strong>v3</strong></td><td>Một tool <code>learn_get_progress</code>; danh sách slug kèm tên khóa nằm ngay trong description, và <code>topic_slug</code> là <code>Literal</code> → <code>enum</code> trong schema.</td></tr>
+</table>
+
+<figure class="diagram">
+<svg viewBox="0 0 660 190" role="img" aria-label="Số lần gọi tool MCP trong 6 phiên: v1 12 lần trong đó 4 lỗi, v2 13 lần 0 lỗi, v3 7 lần 0 lỗi">
+  <text x="0" y="14" class="d-muted">Tổng số lần gọi tool MCP trong 6 phiên (không tính ToolSearch)</text>
+  <line x1="120" y1="24" x2="120" y2="170" class="d-rule"/>
+  <!-- v1: 8 ok + 4 lỗi, 20px = 1 lần gọi -->
+  <text x="0" y="52" class="d-strong">v1 (bài 4)</text>
+  <rect x="120" y="34" width="160" height="28" class="d-fill"/>
+  <rect x="280" y="34" width="80" height="28" class="d-bad-fill"/>
+  <text x="370" y="52" class="d-small">12 lần · <tspan class="d-bad">4 lỗi</tspan> · 6/6 đúng</text>
+  <!-- v2: 13 -->
+  <text x="0" y="98" class="d-strong">v2 (theo sách)</text>
+  <rect x="120" y="80" width="260" height="28" class="d-fill"/>
+  <text x="390" y="98" class="d-small">13 lần · 0 lỗi · 6/6 đúng</text>
+  <!-- v3: 7 -->
+  <text x="0" y="144" class="d-strong">v3 (enum)</text>
+  <rect x="120" y="126" width="140" height="28" class="d-ok-fill"/>
+  <text x="270" y="144" class="d-small">7 lần · 0 lỗi · 6/6 đúng</text>
+  <text x="120" y="184" class="d-muted">Thang: 20 px = 1 lần gọi. Phần đỏ: lần gọi trả lỗi.</text>
+</svg>
+<figcaption>Hình 2. Kết quả mini-eval, Claude Code 2.1.296, 2026-10-13. Nhìn thanh giữa: v2 hết lỗi nhưng <em>không</em> ít lần gọi hơn v1. Chỉ v3 giảm thật: gần như mọi câu hỏi xong trong đúng một lần gọi. Trung bình token input mỗi phiên: v1 ~117k, v2 ~128k, v3 ~95k (chủ yếu là system prompt lặp lại mỗi lượt, nên token đi theo số lượt).</figcaption>
+</figure>
+
+<p>Đây là chỗ bất ngờ. Bản v2 làm đúng mọi điều trong checklist, và số lỗi về 0. Nếu tôi chỉ nhìn chỉ số "lỗi", tôi sẽ kết luận v2 tốt hơn hẳn. Nhưng nhìn trace thì thấy: model ngoan ngoãn làm theo description, <strong>luôn</strong> gọi <code>learn_list_topics</code> trước, kể cả với câu "khóa CS146S" mà v1 trả lời ngay trong một lần gọi. v2 đã đổi "thử sai" lấy "một lần gọi bắt buộc". Không tệ hơn, nhưng cũng không nhanh hơn.</p>
+
+<p>v3 tốt hơn vì nó đặt thông tin model cần <em>vào chỗ model đã đọc sẵn</em>: description và schema. Không cần lần gọi khám phá nào. Cái giá: danh sách chủ đề cố định lúc server khởi động; thêm chủ đề mới phải kết nối lại server (<code>/mcp</code>). Với 3 chủ đề, đáng. Với 3.000 khách hàng thì không, lúc đó tool tìm kiếm kiểu v2 mới đúng.</p>
+
+<p>Nhiều người nghĩ eval là để "chứng minh bản mới tốt hơn". Thật ra nó để <strong>thấy được trade-off</strong> mà checklist không cho thấy. Và nhớ cỡ mẫu: 6 phiên mỗi bản, 3 câu hỏi, chỉ đủ để thấy hướng, không đủ để tuyên bố con số.</p>
+
+<p><strong>Điều cần nhớ:</strong> unit test kiểm tra hợp đồng của server, chạy mỗi commit. Eval đo hành vi của model, chạy khi đổi thiết kế, và phải nhìn nhiều chỉ số cùng lúc: đúng, số lần gọi, lỗi, token. Tối ưu một chỉ số thì dễ tự lừa mình.</p>
+
+<h2>4. Thực hành (~20 phút)</h2>
+
+<p>Làm trên server <code>learn</code> của bài 4. Nếu anh chưa viết nó, copy code ở <a href="0004-mcp-host-client-server-transport.html">bài 4, mục 7</a> trước. Muốn làm cho một tool ở công ty thì cứ làm, áp đúng các bước; không cần gửi code.</p>
+
+<p class="small">Máy anh chưa có <code>uv</code> trong PATH (tôi kiểm tra 2026-10-13). Dùng venv: <code>python3 -m venv .venv &amp;&amp; .venv/bin/pip install "mcp&gt;=2,&lt;3" pytest anyio</code>. Lưu ý import: <code>from mcp.server import MCPServer</code> và <code>from mcp.server.mcpserver import MCPServer</code> cùng trỏ tới một class.</p>
+
+<p><strong>Bước 1 — Review bằng checklist (5 phút).</strong> Mở <a href="../reference/tool-design.html">cheat sheet</a>, chấm tool của anh theo năm đòn bẩy. Ghi lại: bao nhiêu đòn bẩy đang có vấn đề, và vấn đề nào anh đoán là đắt nhất.</p>
+
+<p><strong>Bước 2 — Làm cho server test được.</strong> Chuyển phần tạo server vào <code>def build_server(learn_dir: Path) -&gt; MCPServer</code>; <code>__main__</code> chỉ còn <code>build_server(Path(sys.argv[1]).resolve()).run()</code>.</p>
+
+<p><strong>Bước 3 — Viết 3 unit test.</strong> Fixture dựng thư mục giả bằng <code>tmp_path</code> và mở client:</p>
+<pre><code>import pytest
+from mcp import Client
+from learn_server import build_server
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+@pytest.fixture
+def learn_dir(tmp_path):
+    ws = tmp_path / "modern-software-developer"
+    (ws / "lessons").mkdir(parents=True)
+    (ws / "learning-records").mkdir()
+    (ws / "MISSION.md").write_text("# Mission: The Modern Software Developer\n", encoding="utf-8")
+    (ws / "lessons" / "0001-a.html").write_text("", encoding="utf-8")
+    (tmp_path / "llm-foundation").mkdir()
+    return tmp_path
+
+@pytest.fixture
+async def client(learn_dir):
+    async with Client(build_server(learn_dir), raise_exceptions=True) as c:
+        yield c</code></pre>
+<p>Ba test anh tự viết:</p>
+<ol>
+  <li>Slug sai → <code>r.is_error</code> và message chứa đủ thông tin để model chọn lại (anh quyết định "đủ" là gì).</li>
+  <li><code>await client.list_tools()</code>: mọi tool có tiền tố chung, có description, và tham số có <code>description</code> trong <code>input_schema</code>.</li>
+  <li>Output của trường hợp đúng nằm dưới một ngân sách ký tự anh tự đặt.</li>
+</ol>
+<details>
+  <summary>Gợi ý test 2 (mở nếu kẹt)</summary>
+<pre><code>@pytest.mark.anyio
+async def test_moi_tool_co_description_va_tien_to(client):
+    tools = (await client.list_tools()).tools
+    for t in tools:
+        assert t.name.startswith("learn_")
+        assert t.description and len(t.description) &gt; 30
+    schema = next(t for t in tools if t.name == "learn_get_progress").input_schema
+    assert "description" in schema["properties"]["topic_slug"]</code></pre>
+</details>
+
+<p><strong>Bước 4 — Thử phá.</strong> Đổi <code>ToolError</code> thành <code>ValueError</code>. Chạy <code>.venv/bin/python -m pytest -q</code>. Test nào đỏ, và message assert nói gì? Đổi lại.</p>
+
+<p><strong>Bước 5 — Mini-eval.</strong> Chọn hai phiên bản để so (bản bài 4 và bản anh vừa sửa). Với mỗi bản, tạo file config <code>vN.json</code> theo dạng <code>{"mcpServers":{"learn":{"command":"…/.venv/bin/python","args":["…/server.py","…/output/learn"]}}}</code>, rồi chạy từ một thư mục <em>ngoài</em> my-agent (để CLAUDE.md không mách model tên khóa học):</p>
+<pre><code>for q in "Tôi đang học tới đâu ở chủ đề mcp?" "Khóa marketing tôi học tới bài mấy rồi?" "Khóa CS146S của tôi đang tới bài nào?"; do
+  for r in 1 2; do
+    claude -p "$q" --mcp-config v2.json --strict-mcp-config \
+      --allowedTools "mcp__learn__learn_get_progress,mcp__learn__learn_list_topics" \
+      --output-format stream-json --verbose &gt; "run-$RANDOM.jsonl"
+  done
+done
+for f in run-*.jsonl; do
+  jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name' "$f" | grep -c mcp__
+done</code></pre>
+<p class="small">Chi phí: 18 phiên của tôi hết khoảng 3 USD. Tổng số lỗi: đếm <code>select(.type=="tool_result" and .is_error==true)</code> trong các message <code>type=="user"</code>.</p>
+
+<p>Trả lời bốn câu:</p>
+<ol>
+  <li>Bước 1: tool của anh có vấn đề ở mấy đòn bẩy? Anh đoán cái nào đắt nhất?</li>
+  <li>Bước 4: test nào đỏ? Nếu không test nào đỏ, test của anh đang kiểm tra cái gì?</li>
+  <li>Bước 5: số lần gọi tool và số lỗi của hai bản. Có giống dự đoán ở câu 1 không?</li>
+  <li>Bản v3 của tôi đưa danh sách slug vào schema. Với tool tra cứu ở công ty của anh (ví dụ tra khách hàng, tra service), cách đó có dùng được không? Ranh giới ở đâu?</li>
+</ol>
+
+<h2>5. Kiểm tra cuối bài</h2>
+<p>Ba câu tình huống, rồi hai câu tự diễn đạt. Bài 3 anh được 5/5 nên lần này câu nhận diện ít hơn, câu tự viết nhiều hơn.</p>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Team muốn agent tra thông tin khách hàng. Hệ thống có 14 endpoint REST (profile, tài khoản, giao dịch, KYC…). Thiết kế tool nào hợp lý nhất để bắt đầu?</p>
+  <ul class="quiz-options">
+    <li data-correct>Vài tool theo tác vụ, mỗi tool gộp nhiều endpoint lại</li>
+    <li>Mỗi endpoint thành một tool, giữ nguyên tên và tham số</li>
+    <li>Một tool chung, nhận method, path và cả body tùy ý</li>
+    <li>Một tool trả toàn bộ hồ sơ khách hàng một lần</li>
+  </ul>
+  <p class="quiz-explain">Bọc 1:1 là lỗi phổ biến nhất mà Anthropic nêu: 14 tool chiếm context và model phải tự ghép luồng. Tool chung kiểu "gọi API bất kỳ" đẩy toàn bộ việc hiểu API sang model. Trả toàn bộ hồ sơ thì phình output, phần lớn là thông tin thấp giá trị. Bắt đầu từ các tác vụ thật (ví dụ "tra giao dịch bất thường của khách X"), mỗi tác vụ một tool, rồi đo.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Tool <code>search_orders</code> trả mảng JSON, mỗi đơn 40 trường, mã đơn là UUID. Model hay trích sai mã đơn khi trả lời. Sửa gì trước?</p>
+  <ul class="quiz-options">
+    <li data-correct>Trả ít trường hơn, dùng mã đơn mà người đọc được</li>
+    <li>Thêm vào description câu dặn chép mã cho thật cẩn thận</li>
+    <li>Tăng MAX_MCP_OUTPUT_TOKENS lên cao để model đọc được đủ cả mảng</li>
+    <li>Chuyển sang model lớn hơn để giảm lỗi chép mã đơn</li>
+  </ul>
+  <p class="quiz-explain">Anthropic ghi nhận đổi UUID sang định danh có nghĩa giảm hallucination khi model trích lại. Cắt còn các trường có giá trị cũng giảm nhiễu và token. Dặn "cẩn thận" trong description không đổi được bản chất của chuỗi 36 ký tự ngẫu nhiên. Tăng giới hạn output thì làm vấn đề nặng hơn.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Anh muốn CI chặn được regression "message lỗi của tool bị nuốt" trên mỗi merge request. Dùng gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Unit test qua in-memory client, assert đúng nội dung message lỗi</li>
+    <li>Chạy eval với agent thật mỗi commit, so số lần gọi</li>
+    <li>Gọi thử bằng MCP Inspector trước khi merge, xem bằng mắt</li>
+    <li>Bật raise_exceptions trong production để mọi lỗi luôn hiện ra đủ</li>
+  </ul>
+  <p class="quiz-explain">Đây là hợp đồng của server, tất định, nên unit test là đúng tầng: nhanh, rẻ, không phụ thuộc model. Eval với agent thật vừa đắt vừa nhiễu, hợp với lúc đổi thiết kế chứ không hợp với gate mỗi commit. <code>raise_exceptions</code> theo tài liệu SDK chỉ có nghĩa trong test.</p>
+</div>
+
+<details>
+  <summary>Tự diễn đạt 1: không nhìn lại bài, liệt kê năm đòn bẩy thiết kế tool, mỗi cái một dòng kèm một ví dụ từ việc của anh. Viết ra trước, rồi mới mở.</summary>
+  <p>(1) Chọn tool theo tác vụ, không bọc 1:1 endpoint. (2) Tên và tham số không hiểu sai được: namespace, <code>user_id</code> thay vì <code>user</code>, enum/ràng buộc trong schema. (3) Description nói làm gì, khi nào dùng, đi cùng tool nào. (4) Output ít mà đắt: bỏ trường thấp giá trị, định danh có nghĩa, CSV/TSV thay JSON, phân trang, <code>response_format</code>. (5) Lỗi chỉ cách sửa, đi bằng tool execution error (<code>ToolError</code>).</p>
+  <p>Anh nhớ được mấy cái? Cái nào quên, đó là chỗ ôn ở bài sau.</p>
+</details>
+
+<details>
+  <summary>Tự diễn đạt 2: trong 3 câu, giải thích cho một dev trong team vì sao bản v2 hết lỗi mà vẫn không tốt hơn v1, và bài học cho cách đọc eval.</summary>
+  <p>v2 thay lần gọi sai bằng một lần gọi <code>list_topics</code> bắt buộc, nên lỗi về 0 nhưng tổng số lần gọi không giảm, thậm chí tăng với câu hỏi rõ ràng. Thông tin model cần vẫn nằm sau một lần gọi, chỉ đổi từ "thử sai" sang "hỏi trước". Bài học: eval phải nhìn nhiều chỉ số cùng lúc (đúng, số lần gọi, lỗi, token) và đọc trace, vì tối ưu một chỉ số có thể chỉ là dời chi phí sang chỉ số khác.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>Tóm lại</h2>
+<ul>
+  <li><strong>Tool là BFF cho model:</strong> viết cho người mới vào, không cho lập trình viên đã biết hệ thống.</li>
+  <li><strong>Năm đòn bẩy:</strong> tác vụ thay vì endpoint; tên không hiểu sai; description chỉ khi nào dùng; output ít mà đắt; lỗi chỉ cách sửa.</li>
+  <li><strong>Đặt thông tin vào chỗ model đã đọc:</strong> description và schema (enum) rẻ hơn một lần gọi khám phá, khi tập giá trị nhỏ và ít đổi.</li>
+  <li><strong>Hai tầng test:</strong> unit test qua in-memory client cho hợp đồng của server (CI mỗi commit); eval với agent thật cho hành vi của model (khi đổi thiết kế).</li>
+  <li><strong>Đọc eval bằng nhiều chỉ số và trace:</strong> v2 hết lỗi nhưng không ít lần gọi hơn. Cỡ mẫu nhỏ chỉ cho thấy hướng.</li>
+</ul>
+<p>Bài 6 chuyển sang Module 3: <strong>skill</strong>. Skill là cách khác để đưa năng lực vào agent, không qua MCP mà qua file <code>SKILL.md</code> và progressive disclosure. Câu hỏi "đặt thông tin vào chỗ model đã đọc" hôm nay sẽ quay lại ở đó dưới dạng "nạp cái gì lúc nào".</p>
+
+<h2>Đọc thêm</h2>
+<p><strong>Nguồn chính:</strong> <a href="https://www.anthropic.com/engineering/writing-tools-for-agents">"Writing effective tools for agents — with agents"</a> của Anthropic (khoảng 20 phút). Đọc kỹ phần "Principles for writing effective tools" và phần eval; bỏ qua phần dùng Claude tự tối ưu tool nếu thiếu thời gian. Sau đó đọc <a href="https://www.reillywood.com/blog/apis-dont-make-good-mcp-tools/">"APIs don't make good MCP tools"</a> (10 phút) và trang <a href="https://py.sdk.modelcontextprotocol.io/v2/get-started/testing/">Testing của Python SDK v2</a>.</p>
+
+<div class="callout">
+  <span class="label">Báo lại cho tôi</span>
+  <p><strong>Bài 4 (còn nợ):</strong> x/1 + nguyên văn câu đoán ValueError, y/4 + đáp án sai nếu có, và kết quả thực hành nếu đã làm.</p>
+  <p><strong>Bài 5:</strong> (1) Khởi động <strong>x/1</strong> và nguyên văn câu ReAct. (2) Cuối bài <strong>y/3</strong>, kèm đáp án đã chọn nếu sai, và nguyên văn 2 câu tự diễn đạt; với câu 1, ghi rõ nhớ được mấy/5 đòn bẩy trước khi mở. (3) Bốn câu thực hành, nhất là <em>số lần gọi và số lỗi</em> của hai bản ở bước 5. Làm trên tool công ty thì chỉ cần con số, quyết định và điều bất ngờ, không cần code. Chỗ nào chưa rõ, cứ hỏi tôi.</p>
+</div>
+
+<nav class="lesson-nav">
+  <a href="0004-mcp-host-client-server-transport.html">← Bài 4: MCP</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <a href="0006-skill-va-progressive-disclosure.html">Bài 6: Skill →</a>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+<script src="../assets/diagram.js"></script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Context &amp; caching — LLM Foundation</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">LLM Foundation · Reference · cập nhật 2026-09-26 · nguồn: <a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Prompt caching</a>, <a href="https://platform.claude.com/docs/en/about-claude/pricing">Pricing</a>, <a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Effective context engineering</a></p>
+
+<h1>Context &amp; caching</h1>
+<p class="subtitle">Checklist để thiết kế và debug prefix, tính điểm hoà vốn của cache, và chọn cách giữ context sạch. Đi kèm <a href="../lessons/0007-context-engineering-va-prompt-caching.html">Bài 7</a>.</p>
+
+<h2>Nguyên tắc</h2>
+<ul>
+  <li><strong>Mục tiêu:</strong> "smallest possible set of high-signal tokens that maximize the likelihood of some desired outcome."</li>
+  <li><strong>App chọn context ở mỗi lượt.</strong> Tool result, lịch sử, file: thứ gì vào context là do code của anh quyết định.</li>
+  <li><strong>Không đổi đặt trước, hay đổi đặt sau.</strong> Thứ tự: tools → system → KB/tài liệu tĩnh → lịch sử → message user cuối (ngày giờ, tên user, quyền ở đây).</li>
+  <li><strong>Đo, đừng tin:</strong> assert <code>cache_read_input_tokens &gt; 0</code> từ request thứ hai trở đi.</li>
+</ul>
+
+<h2>Cơ chế cache</h2>
+<table>
+  <tr><th>Thuộc tính</th><th>Giá trị</th></tr>
+  <tr><td>Thứ tự prefix</td><td><code>tools</code> → <code>system</code> → <code>messages</code>, tới block có <code>cache_control</code></td></tr>
+  <tr><td>Breakpoint</td><td>Tối đa 4. Write chỉ tại breakpoint; read dò ngược ≤ 20 block/breakpoint. Có thêm chế độ automatic: một <code>cache_control</code> ở top-level</td></tr>
+  <tr><td>TTL</td><td>5 phút mặc định; <code>"ttl": "1h"</code>. Mỗi hit refresh TTL miễn phí</td></tr>
+  <tr><td>Độ dài tối thiểu</td><td>512 (Opus 5.5, Opus 5, Fable 5.1) · 1.024 (Sonnet 5) · 4.096 (Haiku 4.5). Dưới ngưỡng: không cache, không báo lỗi</td></tr>
+  <tr><td>Cô lập</td><td>Theo organization, và theo workspace trên Claude API</td></tr>
+  <tr><td>Usage</td><td><code>cache_creation_input_tokens</code> + <code>cache_read_input_tokens</code> + <code>input_tokens</code> (phần sau breakpoint cuối)</td></tr>
+</table>
+
+<h2>Silent invalidators</h2>
+<table>
+  <tr><th>Thay đổi</th><th>Mất cache</th><th>Thủ phạm hay gặp</th></tr>
+  <tr><td>Tool definitions</td><td>tools + system + messages</td><td>Serialize từ <code>Set</code>/<code>Map</code> không thứ tự; mỗi pod một thứ tự</td></tr>
+  <tr><td>System prompt</td><td>system + messages</td><td><code>now()</code>, request ID, tên user trong system</td></tr>
+  <tr><td>Web search / citations / speed</td><td>system + messages</td><td>Feature flag theo user</td></tr>
+  <tr><td><code>tool_choice</code>, ảnh</td><td>messages</td><td>Ép tool ở lượt đầu rồi bỏ</td></tr>
+  <tr><td>Thinking / effort</td><td>luôn mất messages</td><td>Router đổi effort theo độ khó</td></tr>
+  <tr><td>Context editing (xoá tool result)</td><td>từ điểm xoá trở về sau</td><td>Đánh đổi có chủ đích</td></tr>
+</table>
+
+<h2>Giá (USD / MTok, 2026-09-26)</h2>
+<table>
+  <tr><th>Model</th><th class="num">Input</th><th class="num">Write 5m / 1h</th><th class="num">Read (hệ số)</th><th class="num">Output</th></tr>
+  <tr><td>Fable 5.1</td><td class="num">10</td><td class="num">12.50 / 20</td><td class="num">0.25 (0.025×)</td><td class="num">50</td></tr>
+  <tr><td>Opus 5.5</td><td class="num">4</td><td class="num">5 / 8</td><td class="num">0.20 (0.05×)</td><td class="num">20</td></tr>
+  <tr><td>Sonnet 5</td><td class="num">2</td><td class="num">2.50 / 4</td><td class="num">0.20 (0.1×)</td><td class="num">10</td></tr>
+  <tr><td>Haiku 4.5</td><td class="num">1</td><td class="num">1.25 / 2</td><td class="num">0.10 (0.1×)</td><td class="num">5</td></tr>
+</table>
+<p>Hệ số read <strong>khác nhau theo model</strong>. Mỗi khi có model mới, mở lại pricing page trước khi tính.</p>
+
+<h2>Điểm hoà vốn</h2>
+<pre>TTL 5m:  1.25 + 0.1*k  &lt;  1 + k    =&gt;  k &gt;= 1 hit
+TTL 1h:  2.00 + 0.1*k  &lt;  1 + k    =&gt;  k &gt;= 2 hit</pre>
+<p>Chọn TTL theo khoảng cách giữa các request: dưới 5 phút → 5m · 5–60 phút → 1h · trên 60 phút → không cache.</p>
+
+<h2>KB nhỏ: prompt hay RAG?</h2>
+<p>Dưới ~200k token (~500 trang) thì nhét cả KB vào prompt + cache (Anthropic, 2024). Ví dụ: KB 80k, Sonnet 5, cache luôn ấm → ~$0.016/câu cho phần KB, rẻ hơn RAG top-20 × 800 token (~$0.032). RAG thắng khi: KB đổi liên tục · phân quyền theo user · context rot đo được trong eval · cần trích dẫn tới từng đoạn.</p>
+
+<h2>Giữ context sạch trong agent dài</h2>
+<table>
+  <tr><th>Kỹ thuật</th><th>Được</th><th>Mất</th></tr>
+  <tr><td>Just-in-time (giữ ID/path, nạp khi cần)</td><td>Context gọn, prefix ổn định</td><td>Thêm vòng gọi, thêm latency</td></tr>
+  <tr><td>Tool result clearing (<a href="https://platform.claude.com/docs/en/build-with-claude/context-editing">context editing</a>)</td><td>Nhẹ tay nhất</td><td>Cache từ điểm xoá</td></tr>
+  <tr><td><a href="https://platform.claude.com/docs/en/build-with-claude/compaction">Compaction</a></td><td>Chạy tiếp vô hạn</td><td>Cache messages; rủi ro rơi chi tiết</td></tr>
+  <tr><td>Note-taking (<a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool">memory tool</a>) / sub-agent</td><td>Context chính sạch</td><td>Tổng token tăng</td></tr>
+</table>
+
+<nav class="lesson-nav">
+  <a href="../lessons/0007-context-engineering-va-prompt-caching.html">← Bài 7</a>
+  <a href="glossary.html">Glossary →</a>
+</nav>
+
+</main>
+</body>
+</html>

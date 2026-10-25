@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — System prompt &amp; instruction files</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · System prompt patterns · cập nhật 2026-09-27 · <a href="../lessons/0002-giai-phau-system-prompt.html">Bài 2</a> · <a href="coding-agent-internals.html">Coding agent internals</a> · <a href="glossary.html">Glossary</a></p>
+
+<h1>System prompt &amp; instruction files</h1>
+<p class="subtitle">Đọc prompt như đọc runbook: mỗi dòng chặn một lỗi đã từng xảy ra. Prompt và harness phải khớp nhau.</p>
+
+<h2>Bốn lớp của một request</h2>
+<table>
+  <tr><th>Lớp</th><th>Ai viết</th><th>Ghi chú</th></tr>
+  <tr><td>Tool definitions</td><td>Harness</td><td>Đầu prefix cache</td></tr>
+  <tr><td>System prompt</td><td>Harness</td><td>Claude Code preset: cách dùng tool, an toàn, môi trường</td></tr>
+  <tr><td>CLAUDE.md / AGENTS.md</td><td>Team</td><td>Claude Code: user message sau system prompt. Codex: kèm developer message</td></tr>
+  <tr><td>Hội thoại</td><td>Mỗi lượt</td><td>Dài thêm; cần compaction khi dài</td></tr>
+</table>
+
+<h2>8 mục trong prompt Codex CLI → lỗi mà mục đó chặn</h2>
+<table>
+  <tr><th>Mục</th><th>Chặn lỗi</th></tr>
+  <tr><td>Vai trò &amp; năng lực</td><td>Hứa làm việc không làm được</td></tr>
+  <tr><td>Làm tới cùng, không đoán</td><td>Dừng giữa chừng; bịa kết quả</td></tr>
+  <tr><td>Giữ đúng phạm vi</td><td>Sửa lan man, diff phình to</td></tr>
+  <tr><td>Cách dùng tool (<code>rg</code>, không đọc lại sau patch)</td><td>Chậm, tốn token (giả định: tool luôn báo lỗi khi hỏng)</td></tr>
+  <tr><td>Kiểm tra từ hẹp tới rộng; format ≤ 3 lần</td><td>Chạy cả suite; lặp vô hạn</td></tr>
+  <tr><td>An toàn git (không revert thay đổi của người khác, không <code>reset --hard</code>)</td><td>Mất code đang viết dở</td></tr>
+  <tr><td>Luật AGENTS.md: file sâu hơn thắng; lời dặn trực tiếp thắng file</td><td>Không biết theo ai khi mâu thuẫn</td></tr>
+  <tr><td>Plan tool: đúng 1 bước <code>in_progress</code>; không plan việc 1 bước</td><td>Lạc hướng / plan rườm rà</td></tr>
+</table>
+<p>Nguồn: <a href="https://github.com/openai/codex/blob/main/codex-rs/models-manager/prompt.md">prompt.md</a>, <a href="https://github.com/openai/codex/blob/main/codex-rs/core/gpt_5_codex_prompt.md">gpt_5_codex_prompt.md</a>.</p>
+
+<h2>Claude Code: CLAUDE.md hoạt động thế nào</h2>
+<ul>
+  <li>Là <strong>context, không phải cấu hình bắt buộc</strong>. Muốn chặn chắc chắn → PreToolUse hook.</li>
+  <li>Mọi file được <strong>nối</strong> theo thứ tự rộng → hẹp (global → project → thư mục con); không file nào đè file nào.</li>
+  <li>Hai luật mâu thuẫn → Claude <strong>có thể chọn bừa</strong>. Giữ các file nhất quán là việc của người viết.</li>
+  <li>Mỗi file nên <strong>dưới 200 dòng</strong>; dài hơn thì tuân thủ kém đi. Dùng <code>.claude/rules/</code> theo path để chỉ nạp khi cần.</li>
+  <li>Luật cụ thể thắng luật chung chung: "Use 2-space indentation" tốt hơn "format code nicely".</li>
+</ul>
+<p>Nguồn: <a href="https://code.claude.com/docs/en/memory">How Claude remembers your project</a>.</p>
+
+<h2>ReAct và plan</h2>
+<table>
+  <tr><th>Cách làm</th><th>Hợp với</th><th>Rủi ro</th></tr>
+  <tr><td>ReAct thuần</td><td>Việc 1–2 bước</td><td>Lạc hướng khi việc dài</td></tr>
+  <tr><td>ReAct + plan tool</td><td>Việc nhiều bước, một phiên</td><td>Plan rườm rà cho việc nhỏ</td></tr>
+  <tr><td>Planner / executor tách riêng</td><td>Việc lớn, cần duyệt plan</td><td>Plan lập trước khi thấy code thật</td></tr>
+</table>
+<p>ReAct = nghĩ → làm → quan sát → lặp. Quan sát thật chặn lỗi dây chuyền của suy luận thuần (<a href="https://arxiv.org/abs/2210.03629">Yao et al., ICLR 2023</a>).</p>
+
+<h2>Checklist viết một luật trong CLAUDE.md</h2>
+<ol>
+  <li>Bắt đầu từ một lỗi thật đã xảy ra.</li>
+  <li>Viết cụ thể, kiểm tra được (lệnh chính xác, đường dẫn chính xác).</li>
+  <li>Hậu quả khó đảo ngược? → chuyển thành hook.</li>
+  <li>Có mâu thuẫn với file global / file khác không?</li>
+</ol>
+
+</main>
+</body>
+</html>

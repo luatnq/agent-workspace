@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bài 12 — Eval cho coding agent: đo "có tốt hơn không"</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="../assets/diagram.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Modern Software Developer · Bài 0012 · Module 5 (CS146S W5) · 2026-10-25 · ~45 phút · <a href="0011-agent-ready-codebase-cham-diem-va-audit.html">Bài 11</a> · <a href="../reference/evals.html">Cheat sheet evals</a> · <a href="../reference/agent-ready.html">Agent-ready</a> · <a href="../reference/subagents.html">Subagents</a> · <a href="../reference/hooks.html">Hooks</a> · <a href="../reference/instruction-files.html">Instruction files</a> · <a href="../reference/lo-trinh.html">Lộ trình</a> · <a href="../reference/glossary.html">Glossary</a></p>
+
+<h1>Eval cho coding agent: đo "có tốt hơn không"</h1>
+<p class="subtitle">Ở bài trước, ta đã audit codebase để đạt chuẩn Agent-Ready: viết <code>AGENTS.md</code>, thiết lập lệnh format tự động, gắn hook kiểm tra biên dịch. Nhưng làm thế nào anh chứng minh được với bản thân và ban giám đốc rằng agent <em>thực sự làm việc tốt hơn, ít lỗi hơn và tiết kiệm tiền hơn trước</em>? Trong kỹ nghệ phần mềm chuyên nghiệp, cảm giác chủ quan ("tôi thấy nó thông minh hơn") không có giá trị. Ta kết thúc Module 5 bằng công cụ sắc bén nhất của một kỹ sư trưởng: <strong>Evaluation (Eval) cho Coding Agent</strong>.</p>
+
+<div class="callout">
+  <span class="label">Sau bài này anh làm được</span>
+  <p>Phân biệt rạch ròi 3 tầng kiểm thử của agent: Unit test tool, Tool-level eval, và Agent-level eval. Thiết lập một bộ <strong>Internal Eval Set</strong> gồm 3–5 bài toán thực tế với cơ chế F2P (Fail-to-Pass) và P2P (Pass-to-Pass). Đo lường định lượng hiệu quả của instruction file và hook bằng A/B testing: so sánh tỷ lệ Pass Rate, số turns, thời gian chạy và chi phí token.</p>
+</div>
+
+<h2>0. Khởi động</h2>
+<p>Một câu ôn bài 11 (củng cố tiêu chí Agent-Ready), và một câu đoán trước. Đáp án câu đoán nằm ở mục 1.<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Bài 11 anh đã đạt 4/4 điểm. Câu ôn này củng cố đòn bẩy kỹ thuật quan trọng nhất trong vòng lặp của agent.</aside>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Ở bài 11, đâu là yếu tố kỹ thuật đem lại giá trị cao nhất cho vòng lặp phát triển của coding agent?</p>
+  <ul class="quiz-options">
+    <li data-correct>Có lệnh chạy kiểm thử đơn vị cục bộ nhanh chóng và công cụ định dạng tự động</li>
+    <li>Có tài liệu hướng dẫn nghiệp vụ dài hàng trăm trang lưu trữ trên hệ thống nội bộ</li>
+    <li>Có số lượng các lớp đối tượng kế thừa phức tạp trải dài qua nhiều tầng thư mục</li>
+    <li>Có cấu hình môi trường máy chủ phức tạp đòi hỏi phải kích hoạt thủ công bằng tay</li>
+  </ul>
+  <p class="quiz-explain">Coding agent vận hành theo vòng lặp ReAct (Thought -> Action -> Observation). Việc có lệnh chạy unit test cục bộ siêu nhanh (<15s) và linter tự động sửa format cung cấp phản hồi tất định tức thì, giúp agent tự sửa sai mà không làm đứt gãy mạch suy luận.</p>
+</div>
+
+<details>
+  <summary>Đoán trước: Nếu anh dùng một mô hình LLM khác (LLM-as-a-judge) để đọc đoạn git diff của agent và chấm điểm "code này có đúng không", so với việc chạy bộ unit test tự động (mvn test) xem có pass không, phương pháp nào là Evaluation Oracle chuẩn mực trong kỹ nghệ phần mềm? Viết ra rồi mới mở.</summary>
+  <p>Chính là <strong>bộ unit test tự động</strong>! LLM-as-a-judge rất dễ bị ảo giác hoặc dễ dãi bỏ qua lỗi logic ngầm. Trong lập trình, "code pass toàn bộ assertions kiểm thử" là sự thật khách quan nhị phân (0 hoặc 1) duy nhất đáng tin cậy.</p>
+</details>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<h2>1. Vì sao Coding Agent Eval khác biệt 180 độ so với Chatbot Eval?</h2>
+
+<p>Trong các khóa học LLM truyền thống (như Bài 6 của `llm-foundation`), đánh giá mô hình thường xoay quanh bài toán Text Generation (RAG, tóm tắt, hội thoại):</p>
+<ul>
+  <li>Dùng độ đo tương đồng từ vựng: BLEU, ROUGE, BERTScore.</li>
+  <li>Dùng mô hình ngôn ngữ khác chấm điểm: <em>LLM-as-a-judge</em> (ví dụ: "Hãy chấm điểm câu trả lời này từ 1 đến 5 sao").</li>
+</ul>
+
+<p>Nhưng đối với <strong>Autonomous Coding Agent</strong>, phương pháp đó hoàn toàn vô dụng!<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Trong phát triển phần mềm, một đoạn code dù được LLM khen "rất sáng tạo, đúng chuẩn clean code" nhưng thiếu một dấu chấm phẩy hoặc sai tên biến thì vẫn là <strong>0 điểm (build fail)</strong>.</aside>
+
+<div class="callout">
+  <span class="label">Bản chất của Software Eval</span>
+  <p>Lập trình là một miền bài toán <strong>tất định (deterministic domain)</strong>. Nguồn chân lý tối thượng (Ground Truth / Evaluation Oracle) của chúng ta không phải là lời khen của một AI khác, mà là:<br>
+  <strong>1. Compiler:</strong> Code có biên dịch thành công hay không?<br>
+  <strong>2. Test Suite:</strong> Code có vượt qua toàn bộ các assert kiểm thử chức năng và hồi quy hay không?</p>
+</div>
+
+<h2>2. Ba tầng kiểm thử trong Agentic Engineering</h2>
+
+<p>Để đánh giá một hệ sinh thái agent, ta chia làm 3 tầng độc lập, tương ứng với tháp kiểm thử truyền thống (Unit $\to$ Integration $\to$ E2E):</p>
+
+<div class="diagram">
+<pre>
+                      ┌────────────────────────────────────────┐
+                      │        3. Agent-level Eval (E2E)       │  ◄── Giải quyết ticket Jira thật
+                      │   (Multi-turn ReAct, Pass Rate, Tokens) │      (Đo lường hôm nay học)
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │         2. Tool-level Eval             │  ◄── Model có chọn đúng tool không?
+                      │   (Single-turn: Trigger Rate, Args)    │      (Đã học ở Bài 5)
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │         1. Tool Unit Test              │  ◄── Code của tool có chạy đúng không?
+                      │   (JUnit, Mockito, Pytest, Schema)     │      (Kiểm thử phần mềm truyền thống)
+                      └────────────────────────────────────────┘
+</pre>
+</div>
+
+<ul>
+  <li><strong>Tầng 1: Tool Unit Test:</strong> Đảm bảo mã nguồn của tool chạy ổn định. Ví dụ: Tool `grep_search` không văng lỗi NullPointer khi regex sai cú pháp; tool MCP trả về schema JSON hợp lệ.</li>
+  <li><strong>Tầng 2: Tool-level Eval:</strong> Kiểm tra khả năng hiểu ý định người dùng của model ở một lượt chat (Single turn). Khi người dùng hỏi: <em>"Tìm các class xử lý giao dịch quá hạn"</em>, model có biết gọi tool `grep_search` hay lại tự tiện bịa câu trả lời?</li>
+  <li><strong>Tầng 3: Agent-level Eval (E2E):</strong> Đây là đỉnh cao của đánh giá: giao cho agent một bài toán hoàn chỉnh (ví dụ: một issue bug thật), cấp cho agent quyền chạy bash/edit file trong vòng lặp ReAct đa lượt, và kiểm tra xem agent có tự hoàn thành và pass test hay không.</li>
+</ul>
+
+<h2>3. Giải phẫu một Task trong Bộ Eval Nội Bộ (Internal Eval Set)</h2>
+
+<p>Trên thế giới có benchmark công khai nổi tiếng là **SWE-bench** (gồm hàng nghìn issues từ các repo Python mã nguồn mở). Tuy nhiên, đối với một ngân hàng hay doanh nghiệp sử dụng Java/Spring Boot, SWE-bench không giúp ích nhiều vì:</p>
+<ol>
+  <li>Khác biệt về ngôn ngữ và công nghệ: SWE-bench chủ yếu là Python, trong khi doanh nghiệp dùng Java, Oracle, Kafka.</li>
+  <li>Nguy cơ rò rỉ dữ liệu (Data Leakage): Các issue trên GitHub công khai có thể đã nằm trong tập dữ liệu pre-training của mô hình.</li>
+  <li>Không phản ánh các thư viện nội bộ và quy ước nghiệp vụ độc quyền.</li>
+</ol>
+
+<p>Vì vậy, giải pháp chuẩn mực của một Tech Lead là xây dựng một <strong>Internal Domain-Specific Eval Set</strong> tinh gọn (gồm 3–5 tasks cốt lõi). Mỗi task bao gồm 4 yếu tố kỹ thuật chuẩn mực:<span class="sidenote-ref"></span></p>
+<aside class="sidenote">Đây chính là tiêu chuẩn mà các công ty hàng đầu (Anthropic, Cognition/Devin) dùng để benchmark harness nội bộ.</aside>
+
+<table>
+  <tr><th>Thành phần</th><th>Ý nghĩa kỹ thuật</th><th>Ví dụ trong dự án Spring Boot</th></tr>
+  <tr>
+    <td><strong>Task ID &amp; Problem Statement</strong></td>
+    <td>Mô tả lỗi hoặc yêu cầu tính năng từ Jira issue gốc. Không được mách nước tên file hay cách sửa.</td>
+    <td><code>BUG-102: Phí chuyển tiền ngoại tệ bị làm tròn xuống thay vì làm tròn lên khi số tiền nhỏ hơn 1 USD.</code></td>
+  </tr>
+  <tr>
+    <td><strong>Base Commit (Git SHA)</strong></td>
+    <td>Commit trên nhánh git mà tại đó bug đang tồn tại. Agent sẽ bắt đầu làm việc từ commit này.</td>
+    <td><code>git checkout 8f4a1c2</code> (trạng thái mã nguồn trước khi bug được fix).</td>
+  </tr>
+  <tr>
+    <td><strong>Fail-to-Pass Test (F2P)</strong></td>
+    <td><strong>Bài kiểm thử chứng minh:</strong> Bài test kiểm tra đúng ca lỗi bị báo cáo. Ở Base Commit, bài test này <strong>phải FAIL</strong>; sau khi agent sửa xong, nó <strong>phải PASS</strong>.</td>
+    <td><code>FxTransferServiceTest.shouldRoundUpFeeWhenAmountIsFractional()</code></td>
+  </tr>
+  <tr>
+    <td><strong>Pass-to-Pass Tests (P2P)</strong></td>
+    <td><strong>Bài kiểm thử hồi quy:</strong> Toàn bộ các bài test cũ của hệ thống. Phải tiếp tục PASS sau khi agent sửa code (chứng minh agent không phá hỏng cái cũ).</td>
+    <td>Toàn bộ 45 bài test khác trong <code>FxTransferServiceTest</code>.</td>
+  </tr>
+</table>
+
+<h2>4. Bộ chỉ số đo lường cốt lõi (Core Metrics)</h2>
+
+<p>Khi chạy benchmark tự động qua hàng loạt tasks, ta thu thập bảng số liệu sau:</p>
+
+<table>
+  <tr><th>Chỉ số</th><th>Cách đo</th><th>Tại sao quan trọng với Tech Lead?</th></tr>
+  <tr>
+    <td><strong>Pass Rate (%)</strong></td>
+    <td>$\frac{\text{Số task F2P chuyển sang PASS}}{\text{Tổng số task}} \times 100\%$</td>
+    <td>Chỉ số sống còn đo độ chính xác và khả năng giải quyết vấn đề của agent.</td>
+  </tr>
+  <tr>
+    <td><strong>Turns to Solve</strong></td>
+    <td>Số lượt lặp lại vòng ReAct (Thought $\to$ Tool Call)</td>
+    <td>Đo tính định hướng: agent đi thẳng vào file cần sửa hay loay hoay mở 30 files lung tung?</td>
+  </tr>
+  <tr>
+    <td><strong>Token Consumption</strong></td>
+    <td>Tổng Input Tokens + Output Tokens</td>
+    <td>Quyết định chi phí tiền điện toán ($). Khi có <code>AGENTS.md</code> chuẩn, lượng token thường giảm 40–60%.</td>
+  </tr>
+  <tr>
+    <td><strong>Wall-clock Runtime</strong></td>
+    <td>Thời gian thực thi từ start đến finish (giây)</td>
+    <td>Đo độ trễ trải nghiệm của kỹ sư: agent hoàn thành trong 2 phút hay bắt người dùng đợi 20 phút?</td>
+  </tr>
+  <tr>
+    <td><strong>Tool Error Rate (%)</strong></td>
+    <td>$\frac{\text{Số lần tool call bị lỗi}}{\text{Tổng số lượt gọi tool}} \times 100\%$</td>
+    <td>Chỉ số phản ánh chất lượng tài liệu repo: tool error cao nghĩa là agent đang gõ sai lệnh bash hoặc gõ sai đường dẫn file.</td>
+  </tr>
+</table>
+
+<h2>5. Kịch bản A/B Test: Chứng minh giá trị của `AGENTS.md` &amp; `Hooks`</h2>
+
+<p>Hãy xem một thử nghiệm thực tế (Experiment) chạy trên một bộ 5 tasks kiểm thử nội bộ:</p>
+
+<div class="diagram">
+<pre>
+┌──────────────────────────────────────────────┐       ┌──────────────────────────────────────────────┐
+│        Baseline (Repo chưa tối ưu)           │       │        Treatment (Repo Agent-Ready)          │
+├──────────────────────────────────────────────┤       ├──────────────────────────────────────────────┤
+│ • Không có AGENTS.md                         │       │ • Có AGENTS.md chuẩn 80 dòng                 │
+│ • Không có Hook kiểm tra biên dịch           │       │ • Có PostToolUse Hook kiểm tra biên dịch     │
+│ • Agent phải tự mò mẫm lệnh build            │       │ • Có lệnh chạy fast unit test subset         │
+├──────────────────────────────────────────────┤       ├──────────────────────────────────────────────┤
+│ ❌ Pass Rate: 20% (1/5 tasks giải quyết xong)│  ==>  │ ✅ Pass Rate: 80% (4/5 tasks giải quyết xong)│
+│ 📉 Turns trung bình: 26 lượt gọi tool        │       │ 📈 Turns trung bình: 8 lượt gọi tool         │
+│ 💸 Tokens trung bình: 92.000 tokens / task   │       │ 💰 Tokens trung bình: 24.000 tokens / task   │
+│ ⏱️ Thời gian trung bình: 14 phút / task      │       │ ⚡ Thời gian trung bình: 2,5 phút / task     │
+│ 💥 Tool Error Rate: 34% (gõ sai lệnh bash)   │       │ 🛡️ Tool Error Rate: 3%                       │
+└──────────────────────────────────────────────┘       └──────────────────────────────────────────────┘
+</pre>
+</div>
+
+<p><strong>Kết luận định lượng:</strong> Nhờ có <code>AGENTS.md</code> và <code>Hook</code>, chi phí token giảm <strong>74%</strong>, thời gian chờ giảm <strong>82%</strong>, và tỷ lệ giải quyết thành công tăng gấp <strong>4 lần</strong>! Đây là bằng chứng số liệu không thể chối cãi để anh trình bày trong các buổi báo cáo quản lý.</p>
+
+<h2>6. Kiểm tra hiểu biết cuối bài</h2>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Tiêu chuẩn đánh giá (Evaluation Oracle) tin cậy và chuẩn mực nhất đối với một coding agent là gì?</p>
+  <ul class="quiz-options">
+    <li data-correct>Các bài kiểm thử tự động độc lập chạy pass hoàn toàn mà không có lỗi phát sinh</li>
+    <li>Lời nhận xét đánh giá cảm tính của một mô hình ngôn ngữ lớn khác trong hệ thống</li>
+    <li>Độ dài của đoạn văn bản giải thích mã nguồn do agent sinh ra sau mỗi lượt chạy</li>
+    <li>Số lượng các dòng chú thích được chèn thêm vào bên trong các tệp tin mã nguồn này</li>
+  </ul>
+  <p class="quiz-explain">Trong kỹ nghệ phần mềm, code đúng hay sai là một giá trị nhị phân tất định. Không có thước đo nào đáng tin cậy hơn việc bộ unit/integration test tự động vượt qua 100% assertions. Sử dụng LLM-as-a-judge cho code rất dễ bị ảo giác và bỏ lọt lỗi logic ngầm.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Khi đánh giá hiệu quả của coding agent, tại sao chỉ số Token Cost và Số lượt Turn lại quan trọng ngang ngửa Pass Rate?</p>
+  <ul class="quiz-options">
+    <li data-correct>Phản ánh trực tiếp chi phí tài chính thực tế cùng độ trễ phản hồi của hệ thống</li>
+    <li>Cho biết máy chủ cơ sở dữ liệu có bị ngắt kết nối mạng bất ngờ hay không</li>
+    <li>Đảm bảo rằng toàn bộ các bài kiểm thử tự động đã được xóa bỏ hoàn toàn sạch</li>
+    <li>Ngăn chặn mô hình ngôn ngữ tự ý sửa đổi các quy tắc bảo mật của hệ thống</li>
+  </ul>
+  <p class="quiz-explain">Hai agent cùng pass được một bài test, nhưng agent A chỉ tốn 5 turns và 10k token (xong trong 1 phút, tốn 0.05$), còn agent B tốn 30 turns và 150k token (xong trong 15 phút, tốn 1.20$). Trong môi trường doanh nghiệp quy mô lớn, sự chênh lệch về chi phí và độ trễ là bài toán sống còn.</p>
+</div>
+
+<div class="quiz" data-quiz>
+  <p class="quiz-q">Vì sao các doanh nghiệp ngân hàng không nên phụ thuộc hoàn toàn vào các benchmark công khai như SWE-bench?</p>
+  <ul class="quiz-options">
+    <li data-correct>Benchmark công khai không phản ánh đúng thư viện nội bộ và các quy ước nghiệp vụ riêng</li>
+    <li>Các bài kiểm tra công khai luôn có độ phức tạp quá thấp so với các dự án</li>
+    <li>Mô hình ngôn ngữ bị cấm truy cập vào mạng internet để tải về các bộ dữ liệu</li>
+    <li>Chi phí để thực thi các bài kiểm thử công khai là quá đắt đỏ cho doanh nghiệp</li>
+  </ul>
+  <p class="quiz-explain">SWE-bench chủ yếu gồm các dự án mã nguồn mở Python phổ biến, có nguy cơ rò rỉ dữ liệu (data leakage) và không chứa đựng các công nghệ (Java/Spring, Oracle), thư viện nội bộ cũng như quy ước khắt khe về an toàn bảo mật của ngành ngân hàng.</p>
+</div>
+
+<p class="quiz-score" data-quiz-score></p>
+
+<details>
+  <summary>Tự diễn đạt 1: Giải thích cơ chế F2P (Fail-to-Pass) và P2P (Pass-to-Pass) bằng một sự cố bug thực tế trong dự án Spring Boot mà anh từng xử lý.</summary>
+  <p><em>Gợi ý đối chiếu:</em> Khi người dùng báo cáo lỗi NullPointerException trong hàm tính thưởng cuối năm: (1) Anh viết một unit test mô phỏng đúng payload gây lỗi, chạy test thấy FAIL đỏ lòm $\to$ đó là <strong>F2P</strong>; (2) Anh giao cho agent sửa code trong Service cho tới khi bài test đó chuyển sang PASS xanh; (3) Anh chạy lại toàn bộ test suite cũ gồm 200 bài test tính lương khác và thấy tất cả vẫn PASS $\to$ đó là <strong>P2P</strong> (không bị hồi quy lỗi).</p>
+</details>
+
+<details>
+  <summary>Tự diễn đạt 2: Nếu một thành viên trong team đề xuất: "Cần gì chạy test, cứ dùng Claude Sonnet 4.6 làm judge đọc diff rồi chấm điểm từ 1 đến 10 là biết agent viết code tốt hay không", anh sẽ phản biện ra sao?</summary>
+  <p><em>Gợi ý đối chiếu:</em> Phân tích 3 rủi ro chí mạng: (1) LLM-as-a-judge không thể phát hiện lỗi biên dịch hoặc lỗi type mismatch ngầm; (2) Model judge rất dễ bị đánh lừa bởi code viết văn hoa, đặt tên biến đẹp nhưng logic xử lý biên (edge cases) sai hoàn toàn; (3) Chi phí gọi LLM judge vừa đắt đỏ vừa không có tính tất định, trong khi chạy `./gradlew test` hoàn toàn miễn phí, chạy trong 5 giây và đảm bảo tính đúng đắn toán học 100%.</p>
+</details>
+
+<h2>7. Thực hành: Phác thảo 1 bài Eval Task cho repo của anh</h2>
+
+<p>Hãy tự thiết kế một bài toán kiểm thử nội bộ đầu tiên:</p>
+
+<ol>
+  <li><strong>Chọn một bug trong quá khứ:</strong> Nhớ lại một bug nhỏ (đã từng fix thành công trong quá khứ trên repo công việc hoặc repo cá nhân).</li>
+  <li><strong>Xác định 4 thành phần của Task:</strong>
+    <ul>
+      <li><strong>Task ID &amp; Problem Statement:</strong> Viết lại mô tả lỗi ngắn gọn (2–3 câu) y như khi người dùng mở issue.</li>
+      <li><strong>Base Commit:</strong> Tìm commit git trước khi bug được fix.</li>
+      <li><strong>F2P Test:</strong> Chỉ ra class test và method test kiểm tra ca lỗi đó.</li>
+      <li><strong>Oracle Command:</strong> Câu lệnh bash để chạy kiểm thử xác minh (ví dụ: <code>./gradlew test --tests *BugFixTest</code>).</li>
+    </ul>
+  </li>
+  <li><strong>Thực hiện kiểm tra tính năng lưu log trắc nghiệm:</strong> Trả lời các câu trắc nghiệm ở trên, F5 kiểm tra, và bấm nút <strong>"📋 Sao chép báo cáo kết quả gửi Agent"</strong> để dán kết quả vào chat cùng thảo luận!</li>
+</ol>
+
+<h2>Tóm tắt cốt lõi</h2>
+<ul>
+  <li><strong>Test suite là Oracle tối thượng:</strong> Đánh giá coding agent dựa trên việc code có chạy được và pass test hay không, không dựa vào LLM-as-a-judge cảm tính.</li>
+  <li><strong>F2P và P2P:</strong> Sửa đúng lỗi được giao (Fail-to-Pass) và không làm hỏng chức năng cũ (Pass-to-Pass).</li>
+  <li><strong>Đo lường đa chiều:</strong> Pass rate quan trọng, nhưng Token cost và số lượt Turns quyết định tính khả thi kinh tế trong doanh nghiệp.</li>
+</ul>
+
+<p>Chúc mừng anh đã hoàn thành toàn bộ <strong>Module 5: Codebase sẵn sàng cho agent &amp; Kỹ thuật Eval</strong>! Ở Module 6 tiếp theo, ta sẽ khám phá bài toán hóc búa nhất của một Tech Lead: <strong>Agentic Code Review — Cách xây dựng hệ thống tự động review code chất lượng cao cho cả team</strong>.</p>
+
+<nav class="lesson-nav">
+  <a href="0011-agent-ready-codebase-cham-diem-va-audit.html">← Bài 11: Agent-ready codebase</a>
+  <a href="../reference/lo-trinh.html">Lộ trình</a>
+  <span class="disabled">Bài 13: Agentic code review (Module 6) →</span>
+</nav>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

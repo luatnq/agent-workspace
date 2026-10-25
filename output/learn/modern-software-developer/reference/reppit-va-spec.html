@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — RePPIT &amp; spec-driven</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · RePPIT &amp; spec-driven · cập nhật 2026-09-27 · <a href="../lessons/0003-reppit-va-spec-driven.html">Bài 3</a> · <a href="system-prompt-patterns.html">System prompt patterns</a> · <a href="glossary.html">Glossary</a></p>
+
+<h1>RePPIT &amp; spec-driven</h1>
+<p class="subtitle">Nghi thức tỉ lệ với độ lớn và độ lạ của việc. Duyệt tài liệu có đòn bẩy lớn hơn duyệt code. Xóa context giữa các bước.</p>
+
+<h2>Chọn cách làm</h2>
+<table>
+  <tr><th>Tình huống</th><th>Cách làm</th></tr>
+  <tr><td>Tả được diff trong 1 câu</td><td>Làm luôn (vẫn cần test)</td></tr>
+  <tr><td>Vài file, codebase quen</td><td>Plan mode → duyệt → làm</td></tr>
+  <tr><td>Feature lớn / codebase lạ</td><td>RePPIT đủ 5 bước</td></tr>
+  <tr><td>Team cần thống nhất yêu cầu</td><td>Spec-first; spec-anchored nếu có kỷ luật cập nhật</td></tr>
+</table>
+
+<h2>RePPIT</h2>
+<table>
+  <tr><th>Bước</th><th>Output</th><th>Luật</th></tr>
+  <tr><td>Research</td><td>MD 100–300 dòng, hiện trạng codebase, có file:dòng</td><td>Không đề xuất. Chạy mới mỗi lần, không commit. <strong>Anh duyệt.</strong></td></tr>
+  <tr><td>Propose</td><td>Đúng 2 phương án: tổng quan, thay đổi chính, trade-off, cách kiểm tra, câu hỏi mở</td><td>Hai phương án khác nhau thật. <strong>Anh chọn.</strong></td></tr>
+  <tr><td>Plan</td><td>Design doc: yêu cầu, quyết định + lý do, data model, tích hợp, file sửa / không sửa</td><td><code>/clear</code> trước khi chạy. <strong>Anh duyệt.</strong></td></tr>
+  <tr><td>Implement</td><td>Code theo plan</td><td>Plan đủ tốt thì không còn chỗ để đoán</td></tr>
+  <tr><td>Test</td><td>Review + test</td><td>Instance khác hoặc model khác review. <strong>Anh duyệt.</strong></td></tr>
+</table>
+<p>Nguồn: <a href="https://mlops.community/blog/reppit-a-framework-to-ship-production-code-2-3x-faster">Mihail Eric</a>; nền tảng: <a href="https://github.com/humanlayer/advanced-context-engineering-for-coding-agents/blob/main/ace-fca.md">ACE-FCA</a> (giữ context ở 40–60%, compaction có chủ đích).</p>
+
+<h2>Prompt mẫu</h2>
+<pre><code># Research
+Nghiên cứu codebase cho ticket: &lt;ticket&gt;. Chỉ mô tả hiện trạng
+(file liên quan, luồng dữ liệu, điểm tích hợp, test hiện có).
+KHÔNG đề xuất. Ghi vào research.md, 100–300 dòng, có file:dòng.
+
+# Propose  (sau /clear)
+Đọc research.md và ticket. Đưa ĐÚNG HAI phương án khác nhau thật sự:
+tổng quan, thay đổi chính, trade-off, cách kiểm tra, câu hỏi mở.</code></pre>
+
+<h2>Spec-driven: ba mức (Böckeler)</h2>
+<table>
+  <tr><th>Mức</th><th>Rủi ro</th></tr>
+  <tr><td>Spec-first</td><td>Ít</td></tr>
+  <tr><td>Spec-anchored</td><td>Spec lỗi thời</td></tr>
+  <tr><td>Spec-as-source</td><td>Cứng nhắc + không tất định</td></tr>
+</table>
+<p>Công cụ: <a href="https://github.com/github/spec-kit">Spec Kit</a> (constitution → specify → plan → tasks → implement → converge), <a href="https://kiro.dev/docs/specs/">Kiro</a> (requirements / design / tasks, EARS: <em>WHEN … THE SYSTEM SHALL …</em>).</p>
+
+<h2>Prompting 2026</h2>
+<ul>
+  <li><strong>Giữ:</strong> cụ thể (file, pattern, triệu chứng); cho cách tự kiểm tra; ví dụ mẫu; XML tag.</li>
+  <li><strong>Bỏ:</strong> viết hoa gây sức ép; prefill (400 từ Claude 4.6); "think hard" (chỉ <code>ultrathink</code> là từ khóa).</li>
+  <li>Context file: tổng quan repo không giúp ích (+20% chi phí); chỉ ghi quy ước khác thường (<a href="https://arxiv.org/abs/2602.11988">Gloaguen et al. 2026</a>).</li>
+</ul>
+
+</main>
+</body>
+</html>

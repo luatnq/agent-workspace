@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Subagent &amp; Multi-agent Patterns</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Subagents &amp; Multi-agent · cập nhật 2026-10-25 · <a href="../lessons/0010-subagent-va-multi-agent-planner-implementer-reviewer.html">Bài 10</a> · <a href="hooks.html">Hooks</a> · <a href="instruction-files.html">Instruction files</a> · <a href="skills.html">Skills</a> · <a href="glossary.html">Glossary</a> · <a href="lo-trinh.html">Lộ trình</a></p>
+
+<h1>Subagent &amp; Multi-agent Patterns</h1>
+<p class="subtitle">Kiến trúc đa tác tử trong coding agent: phân rã ngữ cảnh (Context Isolation), chuyên biệt hóa vai trò (Specialization), và cơ chế bàn giao thông qua Artifact thay vì chat tự do.</p>
+
+<h2>1. Vì sao cần Subagent? Bài toán Context Isolation</h2>
+<p>Khi đối mặt với codebase lớn, một tác tử duy nhất (Single "God" Agent) nhanh chóng rơi vào bẫy <strong>Context Rot</strong> và <strong>Lost in the Middle</strong>. Nếu agent phải mở 30 files mã nguồn để khảo sát kiến trúc, context phình to lên 150k tokens, dẫn đến:</p>
+<ul>
+  <li><strong>Chi phí tăng vọt:</strong> Mọi lượt gọi tool hay suy nghĩ sau đó đều phải trả tiền đọc lại 150k tokens rác từ quá trình đọc file trước đó.</li>
+  <li><strong>Độ trễ (TTFT) cao:</strong> Xử lý prompt khổng lồ làm chậm vòng lặp phản hồi.</li>
+  <li><strong>Ảo giác &amp; phân tâm:</strong> Model mất khả năng chú ý vào các ràng buộc kỹ thuật cốt lõi.</li>
+</ul>
+
+<p><strong>Giải pháp Subagent (Context Fork):</strong> Tách tác vụ khám phá cho một subagent chạy trong ngữ cảnh cô lập (fork). Subagent đọc 30 files, tốn 40k tokens trong ngữ cảnh tạm, nhưng <em>chỉ trả về một bản tóm tắt ngắn (500 tokens)</em> cho main agent. Toàn bộ rác trung gian được "thu gom rác" (Garbage Collected) khỏi context chính.</p>
+
+<h2>2. Ba mô hình kiến trúc cốt lõi</h2>
+<table>
+  <tr><th>Mô hình</th><th>Cơ chế hoạt động</th><th>Trường hợp áp dụng</th><th>Tương đương Backend</th></tr>
+  <tr>
+    <td><strong>Orchestrator-Workers (Hub &amp; Spoke)</strong></td>
+    <td>Agent chính (Coordinator) phân rã mục tiêu, kích hoạt các subagent độc lập (researcher, coder) và tổng hợp kết quả.</td>
+    <td>Khảo sát codebase lớn, chạy song song nhiều tác vụ tìm kiếm độc lập.</td>
+    <td>Master-Worker Pattern / Fork-Join Pool</td>
+  </tr>
+  <tr>
+    <td><strong>Assembly Line (Pipeline / Handoff)</strong></td>
+    <td>Tuần tự: Planner $\to$ Implementer $\to$ Reviewer. Bàn giao kết quả qua <strong>Artifact</strong> (spec markdown, git diff).</td>
+    <td>Phát triển tính năng mới phức tạp từ yêu cầu sơ khai đến kiểm thử.</td>
+    <td>Message Queue Pipeline / Unix Pipe</td>
+  </tr>
+  <tr>
+    <td><strong>Evaluator-Optimizer (Critic Loop)</strong></td>
+    <td>Implementer tạo mã $\to$ Reviewer/Tester đánh giá tính đúng đắn $\to$ Phản hồi sửa đổi. Bắt buộc có ngưỡng dừng (Max turns).</td>
+    <td>Refactor thuật toán khó, fix bug bảo mật đòi hỏi kiểm chứng chặt chẽ.</td>
+    <td>Retry Policy / Circuit Breaker</td>
+  </tr>
+</table>
+
+<h2>3. Cơ chế Harness: Claude Code vs Antigravity</h2>
+<table>
+  <tr><th>Tính năng</th><th>Claude Code</th><th>Antigravity</th></tr>
+  <tr>
+    <td><strong>Cơ chế cô lập</strong></td>
+    <td><code>context: fork</code> trong skill/agent definition. Subagent chạy trên bản sao ngữ cảnh tạm.</td>
+    <td>Subagent chạy độc lập; hỗ trợ chế độ workspace: <code>inherit</code>, <code>branch</code> (git worktree riêng biệt), <code>share</code>.</td>
+  </tr>
+  <tr>
+    <td><strong>Phân quyền tool (Scoping)</strong></td>
+    <td>Quy định qua frontmatter <code>allowed-tools</code> trong <code>.claude/agents/*.md</code>.</td>
+    <td>Cấu hình cờ <code>enable_write_tools</code>, <code>enable_subagent_tools</code> khi gọi <code>define_subagent</code>.</td>
+  </tr>
+  <tr>
+    <td><strong>Tương tác</strong></td>
+    <td>Giao việc một chiều, subagent chạy xong trả output tổng kết về thread chính.</td>
+    <td>Bất đồng bộ qua message: <code>invoke_subagent</code>, <code>send_message</code>, reactive wakeup khi có kết quả.</td>
+  </tr>
+</table>
+
+<h2>4. So sánh Framework: Native Harness vs LangGraph vs CrewAI vs AutoGen</h2>
+<table>
+  <tr><th>Tiêu chí</th><th>Harness-Native (Claude Code / Antigravity)</th><th>LangGraph</th><th>CrewAI</th><th>AutoGen</th></tr>
+  <tr>
+    <td><strong>Mô hình tư duy</strong></td>
+    <td>Subagent phục vụ công việc lập trình, gắn chặt IDE &amp; shell</td>
+    <td>State Machine / Cyclic Graph biểu diễn bằng code (Python/JS)</td>
+    <td>Role-playing (Mô phỏng chức danh con người trong công ty)</td>
+    <td>Conversational Group Chat (Các agent trò chuyện tự do)</td>
+  </tr>
+  <tr>
+    <td><strong>Kiểm soát Context</strong></td>
+    <td>Rất cao (Fork rõ ràng, ephemeral context)</td>
+    <td>Rất cao (Quản lý state theo từng Node và Edge)</td>
+    <td>Thấp (Dễ bị phình context do prompt mô tả tính cách)</td>
+    <td>Thấp (Hội thoại nhóm dễ bùng nổ token)</td>
+  </tr>
+  <tr>
+    <td><strong>Nguy cơ Ping-pong</strong></td>
+    <td>Thấp (Giao việc hướng mục tiêu rõ ràng)</td>
+    <td>Thấp (Có router và điều kiện chuyển trạng thái tất định)</td>
+    <td>Cao (Các role dễ khen ngợi hoặc tranh luận qua lại)</td>
+    <td>Rất cao (Dễ rơi vào vòng lặp tán gẫu vô tận)</td>
+  </tr>
+  <tr>
+    <td><strong>Khuyên dùng khi</strong></td>
+    <td>Công việc kỹ thuật hàng ngày, coding, refactor, audit repo</td>
+    <td>Hệ thống production phức tạp cần human-in-the-loop và checkpoint</td>
+    <td>Demo ý tưởng, mô phỏng quy trình nghiệp vụ kinh doanh</td>
+    <td>Nghiên cứu tương tác xã hội giữa các mô hình ngôn ngữ</td>
+  </tr>
+</table>
+
+<h2>5. Bốn bẫy kiến trúc (Pitfalls) cần tránh</h2>
+<ul>
+  <li><strong>1. Ping-pong / Banter Trap:</strong> Implementer và Reviewer tranh cãi qua lại về format code khiến cạn ngân sách token. <em>Giải pháp:</em> Luôn chặn cứng giới hạn vòng lặp (Max 2-3 iterations) và ưu tiên dùng Hook/Linter tất định thay vì tranh cãi bằng văn xuôi.</li>
+  <li><strong>2. Context Starvation (Handoff Amnesia):</strong> Gọi subagent với câu lệnh cộc lốc ("Sửa bug này đi") mà không cung cấp đường dẫn file, spec hoặc context cần thiết. <em>Giải pháp:</em> Giao việc kèm Briefing đầy đủ hoặc trỏ vào file spec chung trên đĩa.</li>
+  <li><strong>3. Workspace Collision:</strong> Hai subagent cùng ghi đè vào một file đồng thời gây mất mát mã nguồn. <em>Giải pháp:</em> Dùng chế độ phân nhánh <code>branch</code> (git worktree) hoặc chỉ cho phép một implementer sửa code tại một thời điểm.</li>
+  <li><strong>4. Over-engineering (Lạm dụng):</strong> Tách 3 subagent cho một sửa đổi 2 dòng code. <em>Quy tắc:</em> Chỉ dùng subagent khi cần cô lập lượng đọc lớn (&gt;20k tokens) hoặc cần phân quyền (agent chỉ đọc vs agent ghi).</li>
+</ul>
+
+</main>
+</body>
+</html>
