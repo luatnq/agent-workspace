@@ -143,5 +143,23 @@ Fall 2026 Week 2 tên "Advanced Context Engineering", có buổi 10/1 "Full intr
 - [Doc: Claude Code — Best practices: Enforcing invariants](https://code.claude.com/docs/en/best-practices)
   Nguyên lý chuyển từ "hướng dẫn mềm trong prompt" sang "cưỡng chế cứng bằng hook" khi gặp lỗi lặp lại.
 
+## Bổ sung 2026-10-25 — Week 6 (Agentic Code Review & PR Workflow)
+- [Course: Stanford CS146S Week 6 "Agentic Code Review"](https://themodernsoftware.dev/)
+  Nội dung: AI code review catches vs misses, review architectures, custom rules, fitting AI review into engineering team workflows. Dùng cho: khung Module 6.
+- [Doc: OLHub Platform — `docs/harness/ai-era-code-review.md`](file:///Users/luatnq/workspace/olhub/olhub-platform/docs/harness/ai-era-code-review.md) & [`REVIEW.md`](file:///Users/luatnq/workspace/olhub/olhub-platform/REVIEW.md)
+  Nghiên cứu thực chiến của Luật: 6 nguyên lý từ John Kim (Meta) & Anthropic (code thân vs code lá, đọc bằng chứng, reviewer độc lập, cap 2 vòng sửa); hợp đồng REVIEW.md cấp repo; chuyển dịch từ "Voting cùng auditor" sang "3 Lens + Skeptical Verifier". Dùng cho: case study thực chiến Bài 13 và Bài 14.
+- [Paper: "c-CRAB: Evaluating Code Review Agents via Outcome-based Verification" (arXiv:2603.23448, 2026)](https://arxiv.org/abs/2603.23448)
+  Benchmark đột phá đánh giá chất lượng review agent thông qua việc một coding agent khác có thể dùng review đó để sửa mã và vượt qua unit test tự động hay không; chỉ ra rằng các SOTA review agents hiện tại chỉ giải quyết được ~40% task. Dùng cho: nguồn chính Bài 13.
+- [Doc: Anthropic Code Review & Customize](https://code.claude.com/docs/en/code-review) · [Customize Code Review](https://code.claude.com/docs/en/code-review-customize)
+  Quy chuẩn REVIEW.md: định nghĩa lại mức độ, giới hạn nit (&le;5), "Do not report", "Always check", trích `file:line`. Dùng cho: quy chuẩn hợp đồng review.
+- [Article: "58% of pull requests merge without human review" — Vercel Engineering](https://vercel.com/blog/58-percent-of-prs-in-our-largest-monorepo-merge-without-human-review)
+  Phân loại rủi ro dựa trên bằng chứng diff tự động hóa khâu merge, giảm tải cho kỹ sư.
+- [Study: MSR 2026 (arXiv 2604.03196) / Daniel Vaughan — Code Review Agents Noise Problem](https://codex.danielvaughan.com/2026/04/19/code-review-agents-noise-problem-codex-cli-review-configuration/)
+  60% PR chỉ do AI review có tỷ lệ tín hiệu dưới 30%; mục tiêu của harness chuẩn là tín hiệu >60%, báo nhầm <20%.
+- [Architecture & Guide: CodeRabbit & PR-Agent Pipelines](https://docs.coderabbit.ai/)
+  Mô hình phân luồng AST/Graph Context-Augmented review, multi-pass review pipeline và kỹ thuật loại bỏ nits để bảo vệ sự tập trung của kỹ sư.
+
+
+
 
 

@@ -9,7 +9,7 @@
 <body>
 <main class="page">
 
-<p class="meta">Modern Software Developer · Glossary · cập nhật 2026-10-25 (bài 12) · <a href="../../llm-foundation/reference/glossary.html">Glossary nền (llm-foundation)</a></p>
+<p class="meta">Modern Software Developer · Glossary · cập nhật 2026-10-25 (bài 13) · <a href="../../llm-foundation/reference/glossary.html">Glossary nền (llm-foundation)</a></p>
 
 <h1>Glossary</h1>
 <p class="subtitle">Ngôn ngữ chuẩn của khóa này, nối tiếp glossary của llm-foundation (token, context window, stateless call, prompt caching… đọc ở đó). Một thuật ngữ chỉ vào đây khi Luật đã dùng đúng nó.</p>
@@ -195,6 +195,44 @@ Bài kiểm thử thất bại ở trạng thái mã nguồn ban đầu (chứng
 <p><strong>Pass-to-Pass (P2P)</strong>:<br>
 Toàn bộ các bài kiểm thử hồi quy cũ phải tiếp tục thành công sau khi agent can thiệp, chứng minh agent không phá hỏng các chức năng sẵn có của hệ thống.<br>
 <em>Tránh</em>: "kiểm thử tính năng mới".</p>
+
+<h2>Agentic Code Review</h2>
+
+<p><strong>c-CRAB (Code Review Agent Benchmark)</strong>:<br>
+Bộ benchmark thực chứng (arXiv:2603.23448, 2026) đánh giá năng lực của AI code review dựa trên kết quả hành động (Outcome-based Verification): kiểm tra xem một coding agent khác có thể dựa vào nhận xét review để sửa mã và vượt qua bộ unit test tự động hay không, thay thế cho độ đo tương đồng câu chữ BLEU/ROUGE.<br>
+<em>Tránh</em>: "chấm điểm văn phong review", "đo bằng BLEU/ROUGE".</p>
+
+<p><strong>Reviewer fatigue</strong>:<br>
+Hiện tượng kiệt quệ tâm lý và giảm sút độ tập trung của kỹ sư con người khi phải đọc thẩm định quá nhiều mã nguồn do AI sinh ra với tốc độ dồn dập, dẫn tới hành vi phê duyệt qua loa (rubber-stamping "LGTM") làm lọt lỗi nghiêm trọng vào nhánh chính.<br>
+<em>Tránh</em>: "lười biếng thông thường", "quá tải task".</p>
+
+<p><strong>Context myopia (Code review)</strong>:<br>
+Chứng cận thị ngữ cảnh khi AI review chỉ được cung cấp một đoạn git diff đơn thuần mà thiếu thông tin toàn cục về các lớp cha, hàm gọi bên ngoài (callers), cấu hình bean hoặc schema cơ sở dữ liệu, dẫn tới các cảnh báo sai lệch và ảo giác.<br>
+<em>Tránh</em>: "model bị ngu", "thiếu prompt".</p>
+
+<p><strong>Self-critique filter (Code review)</strong>:<br>
+Tầng kiểm duyệt phản biện trung gian trong đường ống review, bắt model tự sát hạch độ tin cậy (>80%), loại trừ các lỗi format thuộc thẩm quyền của linter, và đảm bảo mọi phát hiện đều có mã sửa mẫu cụ thể trước khi đăng lên PR.<br>
+<em>Tránh</em>: "đăng trực tiếp nhận xét thô", "chỉnh prompt một lần".</p>
+
+<p><strong>Noise-to-signal trap</strong>:<br>
+Bẫy tỷ lệ tín hiệu/nhiễu khi bot review xuất ra quá nhiều lời phê vặt vãnh (nits) về phong cách viết mã, gây ra kiệt quệ cảnh báo (Alert Fatigue) khiến lập trình viên bực bội và bỏ qua các cảnh báo lỗi bảo mật chí mạng.<br>
+<em>Tránh</em>: "bot review càng chi tiết càng tốt".</p>
+
+<p><strong>REVIEW.md</strong>:<br>
+Bản hợp đồng kỹ thuật ở cấp độ repository (chuẩn của Anthropic / Claude Code) quy định luật chơi review: phạm vi diff, danh mục check, những thứ cấm báo (style, ngoài diff), giới hạn minor và kỷ luật vòng lặp.<br>
+<em>Tránh</em>: "hướng dẫn chung", "ghi chung vào README".</p>
+
+<p><strong>Skeptical verifier (Code review)</strong>:<br>
+Subagent thẩm định độc lập chạy với ngữ cảnh sạch (clean context) và tâm thế hoài nghi, có nhiệm vụ lần theo từng dòng mã thật để chứng minh hoặc bác bỏ các finding nghiêm trọng (blocker/major) do các lens phát hiện trước khi xuất bản lên PR.<br>
+<em>Tránh</em>: "voting bằng các auditor giống nhau", "tin ngay phát hiện đầu tiên".</p>
+
+<p><strong>Code thân vs code lá (Risk-based review)</strong>:<br>
+Chiến lược phân bổ chú ý dựa trên bán kính sát thương (blast radius) của John Kim (Meta): code thân (hạ tầng, shared state, migration) bắt buộc người đọc từng dòng; code lá (UI lẻ, độc lập, sau flag) đọc lướt hoặc tự động merge.<br>
+<em>Tránh</em>: "đọc kỹ mọi PR như nhau", "bình đẳng mọi dòng code".</p>
+
+<p><strong>Failure scenario (Kịch bản hỏng)</strong>:<br>
+Tiêu chuẩn bắt buộc cho mọi finding hợp lệ: phải viết được cấu trúc <code>"input/trạng thái X -> hệ thống làm Y, đáng lẽ Z"</code> kèm trích dẫn <code>file:line</code> cụ thể. Đây là thước đo duy nhất để phân biệt bug kỹ thuật thật với cảm giác chủ quan.<br>
+<em>Tránh</em>: "góp ý cảm tính", "nhận xét chung chung không có kịch bản".</p>
 
 </main>
 </body>

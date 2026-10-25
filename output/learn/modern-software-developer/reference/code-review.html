@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat sheet — Agentic Code Review &amp; PR Workflow</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<main class="page">
+
+<p class="meta">Reference · Agentic Code Review · cập nhật 2026-10-25 · <a href="../lessons/0013-agentic-code-review-bat-duoc-gi-sot-gi-va-kien-truc-review.html">Bài 13</a> · <a href="evals.html">Evals</a> · <a href="agent-ready.html">Agent-ready</a> · <a href="subagents.html">Subagents</a> · <a href="hooks.html">Hooks</a> · <a href="instruction-files.html">Instruction files</a> · <a href="glossary.html">Glossary</a> · <a href="lo-trinh.html">Lộ trình</a></p>
+
+<h1>Agentic Code Review &amp; PR Workflow</h1>
+<p class="subtitle">Bản đối chiếu năng lực, các mô hình kiến trúc đường ống review đa tầng và nguyên tắc tối ưu tỷ lệ tín hiệu/nhiễu (Signal-to-Noise Ratio) khi áp dụng AI thẩm định mã nguồn trong môi trường doanh nghiệp.</p>
+
+<h2>1. Ma trận Phân định Năng lực: Bắt được gì vs Sót gì</h2>
+<table>
+  <tr>
+    <th>Hạng mục</th>
+    <th>Khả năng của AI Review</th>
+    <th>Biểu hiện thực tế &amp; Nguyên nhân kỹ thuật</th>
+    <th>Biện pháp bổ khuyết</th>
+  </tr>
+  <tr>
+    <td><strong>Lỗi biên &amp; Logic cục bộ</strong></td>
+    <td><span class="badge ok">Bắt cực tốt</span></td>
+    <td>Bắt chính xác lỗi off-by-one, null-pointer, điều kiện lật ngược, chia cho 0, hoặc quên đóng stream trong phạm vi 1 hàm/class.</td>
+    <td>Giao hoàn toàn cho AI quét sơ bộ.</td>
+  </tr>
+  <tr>
+    <td><strong>Lỗ hổng bảo mật phổ biến</strong></td>
+    <td><span class="badge ok">Bắt cực tốt</span></td>
+    <td>Nhận diện nối chuỗi SQL thô, log forging, hardcoded secret, IDOR cơ bản phù hợp với tri thức tiền huấn luyện (pre-training).</td>
+    <td>Tích hợp cùng SAST tool (Semgrep).</td>
+  </tr>
+  <tr>
+    <td><strong>Sự cảnh giác liên tục</strong></td>
+    <td><span class="badge ok">Vượt trội người</span></td>
+    <td>Không bị Reviewer Fatigue: quét dòng thứ 500 của một diff lớn với sự tập trung và tiêu chuẩn tương tự dòng đầu tiên.</td>
+    <td>Dùng AI làm tầng lọc đầu tiên trên PR.</td>
+  </tr>
+  <tr>
+    <td><strong>Ranh giới kiến trúc &amp; Hợp đồng</strong></td>
+    <td><span class="badge bad">Mù hoàn toàn</span></td>
+    <td>Không nhận biết việc sửa đổi một DTO nội bộ làm vỡ API contract ngầm với các microservice khác nằm ngoài repo.</td>
+    <td>Bắt buộc Tech Lead hoặc API contract test thẩm định.</td>
+  </tr>
+  <tr>
+    <td><strong>Ý định nghiệp vụ (Business Intent)</strong></td>
+    <td><span class="badge bad">Mù hoàn toàn</span></td>
+    <td>Code chạy đúng toán học nhưng sai lệch hoàn toàn so với thỏa thuận miệng hoặc định hướng kinh doanh chưa thành văn bản.</td>
+    <td>Product Owner &amp; Human Lead duyệt logic.</td>
+  </tr>
+  <tr>
+    <td><strong>Vật lý hạ tầng Runtime &amp; Khóa DB</strong></td>
+    <td><span class="badge bad">Rất dễ bỏ sót</span></td>
+    <td>Không đánh giá được câu query JPA gây lock toàn bảng Oracle khi tải 5.000 TPS, hoặc race condition giữa 10 Pod K8s song song.</td>
+    <td>Checklist chuyên sâu (như <code>transactions.md</code>).</td>
+  </tr>
+</table>
+
+<h2>2. Bốn Thế hệ Kiến trúc Code Review Agent</h2>
+<table>
+  <tr>
+    <th>Thế hệ kiến trúc</th>
+    <th>Cơ chế vận hành</th>
+    <th>Ưu điểm</th>
+    <th>Rủi ro &amp; Nhược điểm</th>
+  </tr>
+  <tr>
+    <td><strong>1. Naive Diff Review</strong></td>
+    <td>Gửi thô <code>git diff</code> vào 1 prompt duy nhất của LLM.</td>
+    <td>Cực kỳ đơn giản, triển khai trong 5 phút.</td>
+    <td>Context Myopia; ảo giác cao; phình to token trên PR lớn.</td>
+  </tr>
+  <tr>
+    <td><strong>2. Context-Augmented</strong></td>
+    <td>Phân tích AST/LSP để nạp thêm các lớp cha, hàm gọi và cấu hình xung quanh.</td>
+    <td>Giảm 70% nhận xét sai lệch do thiếu ngữ cảnh ngoài diff.</td>
+    <td>Tăng token input, cần công cụ chỉ mục hóa code repo.</td>
+  </tr>
+  <tr>
+    <td><strong>3. Multi-Pass Pipeline</strong></td>
+    <td>Chạy Linter/Build trước $\to$ Phân luồng Specialist Reviewers $\to$ Self-Critique Gatekeeper.</td>
+    <td>Tỷ lệ tín hiệu/nhiễu cao nhất; không tốn token cho lỗi format; review có chiều sâu.</td>
+    <td>Độ trễ cao hơn (2–4 phút), chi phí nhiều lượt gọi subagent.</td>
+  </tr>
+  <tr>
+    <td><strong>4. Hybrid Paradigm</strong></td>
+    <td>AI chạy trên Draft PR để dev tự sửa $\to$ Human Tech Lead duyệt kiến trúc khi Ready.</td>
+    <td>Tiết kiệm 40% thời gian của Lead; bảo toàn tính an toàn kiến trúc.</td>
+    <td>Đòi hỏi quy trình văn hóa làm việc kỷ luật của cả team.</td>
+  </tr>
+</table>
+
+<h2>3. Bộ lọc Phản biện (Self-Critique Filter Checklist)</h2>
+<p>Trước khi một lời phê được phép xuất hiện trên Pull Request, model phải vượt qua 3 chốt chặn:</p>
+<ol>
+  <li><strong>Chốt chặn Bằng chứng (Confidence &ge; 80%):</strong> Nhận xét có căn cứ xác thực từ dòng code cụ thể hay chỉ là phỏng đoán? Nếu không chắc chắn, hạ cấp xuống mục <em>"Needs confirmation"</em> hoặc hủy bỏ.</li>
+  <li><strong>Chốt chặn Phân định Công cụ (Linter Boundary):</strong> Lỗi này có thể được phát hiện và sửa tự động bởi Spotless, Checkstyle hay SonarQube không? Nếu có, <strong>cấm LLM báo cáo</strong>.</li>
+  <li><strong>Chốt chặn Tính hành động (Actionability):</strong> Lời phê có chỉ rõ <code>file:line</code>, giải thích nguyên nhân và đưa ra đoạn code sửa mẫu không? Tuyệt đối cấm các lời khuyên chung chung kiểu triết lý.</li>
+</ol>
+
+<h2>4. Thang đo Mức độ Nghiêm trọng (Severity Tiers)</h2>
+<ul>
+  <li><span class="badge bad">BLOCKER</span>: Lỗi đúng đắn liên quan đến thất thoát tiền tệ, rò rỉ dữ liệu khách hàng, vi phạm quy định pháp lý, hoặc mất dấu vết audit trail. Cấm merge tuyệt đối.</li>
+  <li><span class="badge warning">MAJOR</span>: Lỗi logic nghiệp vụ có phạm vi hẹp, xử lý sai transaction propagation / concurrency, hoặc rò rỉ thông tin định danh cá nhân (PII) ra log production.</li>
+  <li><span class="badge muted">MINOR</span>: Vi phạm quy ước chuẩn Spring/Java ảnh hưởng đến khả năng bảo trì lâu dài, thiếu bài unit test cho một nhánh điều kiện phức tạp.</li>
+  <li><span class="badge muted">NIT</span>: Góp ý cải tiến nhỏ, không bắt buộc sửa để merge. Giới hạn tối đa không quá 2–3 nits giá trị nhất trên toàn bộ PR.</li>
+</ul>
+
+<h2>5. Benchmark c-CRAB (2026)</h2>
+<ul>
+  <li><strong>Tên đầy đủ:</strong> Code Review Agent Benchmark (arXiv:2603.23448).</li>
+  <li><strong>Nguyên lý:</strong> Thay thế hoàn toàn độ đo tương đồng từ vựng (BLEU/ROUGE) bằng <em>Outcome-based Verification</em> (Xác minh dựa trên kết quả).</li>
+  <li><strong>Quy trình chấm:</strong> AI Review sinh nhận xét $\to$ Coding Agent nhận nhận xét để sửa code $\to$ Chạy bộ unit test tự động. Nếu test PASS $\implies$ Review đạt chuẩn.</li>
+  <li><strong>Thực tế hiện nay:</strong> Các AI review agent hàng đầu thế giới chỉ giải quyết được ~40% các bài toán trong c-CRAB, khẳng định vai trò không thể thay thế của kỹ sư con người đối với các lỗi hệ thống phức tạp.</li>
+</ul>
+
+<h2>6. Sáu Nguyên lý Thực chiến từ Meta &amp; Anthropic</h2>
+<table>
+  <tr><th>#</th><th>Nguyên lý</th><th>Hành động cụ thể</th><th>Quy tắc kỹ thuật</th></tr>
+  <tr>
+    <td><strong>1</strong></td>
+    <td><strong>Code Thân vs Code Lá</strong></td>
+    <td>Phân bổ sự chú ý theo bán kính sát thương (blast radius). Code hạ tầng/state/migration đọc từng dòng; code UI lẻ/sau flag đọc lướt hoặc 0 người duyệt.</td>
+    <td>Vercel monorepo: 58% PR tự merge mà không cần người đọc nhờ phân loại rủi ro theo git diff.</td>
+  </tr>
+  <tr>
+    <td><strong>2</strong></td>
+    <td><strong>Đọc Bằng chứng thay vì Đọc Code</strong></td>
+    <td>Kỹ sư chuyển từ soi cú pháp sang kiểm chứng đầu ra và kiến trúc. Bắt AI tự đính kèm test log, screenshot UI, build trace vào PR.</td>
+    <td>Không có test run / CI pass $\implies$ Từ chối mở review.</td>
+  </tr>
+  <tr>
+    <td><strong>3</strong></td>
+    <td><strong>Reviewer Độc lập (Fresh Context)</strong></td>
+    <td>Tuyệt đối không để agent vừa viết code tự review chính mình (bị nhiễm ngữ cảnh và có xu hướng bao biện).</td>
+    <td>Spawn subagent ngữ cảnh sạch (clean context) với tâm thế hoài nghi (adversarial).</td>
+  </tr>
+  <tr>
+    <td><strong>4</strong></td>
+    <td><strong>Chặn Bẫy Lặp &amp; Bới Code Cũ</strong></td>
+    <td>AI không kiểm soát bới code cũ chiếm 59% comment (Anthropic study). Cấm comment style; chỉ xét diff mới; giới hạn trần cứng.</td>
+    <td>Tối đa &le; 2 vòng sửa tự động; sau 2 vòng bàn giao cho Tech Lead.</td>
+  </tr>
+  <tr>
+    <td><strong>5</strong></td>
+    <td><strong>Feature Flag &amp; Rollback</strong></td>
+    <td>Chỉ dám giảm thời gian đọc code khi có thể đảo ngược sai lầm trong vài giây.</td>
+    <td>Mọi tính năng mới phải có Write Gate / Kill Switch tắt tức thì khi có sự cố.</td>
+  </tr>
+  <tr>
+    <td><strong>6</strong></td>
+    <td><strong>Kỹ sư Dồn về Hai Đầu</strong></td>
+    <td>Đầu vào: Quyết định nghiệp vụ, kiến trúc, spec, contract, CI gates. Đầu ra: Thẩm định bảo mật, trách nhiệm cuối <em>"You land it, you own it"</em>.</td>
+    <td>Con người chịu trách nhiệm hệ thống, AI là trợ lý cần mẫn.</td>
+  </tr>
+</table>
+
+<h2>7. Hợp đồng <code>REVIEW.md</code> &amp; Failure Scenario Contract</h2>
+<ul>
+  <li><strong>Vai trò:</strong> Bản hợp đồng cấp độ repository quy định luật chơi review giữa người và AI (tương tự như <code>AGENTS.md</code> cho instruction).</li>
+  <li><strong>Quy tắc Phạm vi:</strong> Nghiêm cấm nhận xét code ngoài diff trừ khi diff mới làm code cũ bị hỏng hoặc chạm tới.</li>
+  <li><strong>Tiêu chí Kịch bản hỏng (Failure Scenario):</strong> Bắt buộc theo mẫu <code>"Input/trạng thái X -> Hệ thống làm Y, đáng lẽ Z"</code> kèm trích dẫn <code>file:line</code> thật. Không viết được kịch bản hỏng $\implies$ <strong>Hủy bỏ finding</strong>.</li>
+  <li><strong>Giới hạn Minor:</strong> Tối đa &le; 5 minor findings, không bao giờ kích hoạt vòng sửa tự động, chỉ gom vào tóm tắt PR.</li>
+  <li><strong>Kiến trúc Đa tầng:</strong> Chuyển từ "Voting giữa các auditor giống nhau" sang <strong>"3 Lens đa chiều (Security, Data, Logic) + Skeptical Verifier"</strong>.</li>
+</ul>
+
+</main>
+</body>
+</html>
