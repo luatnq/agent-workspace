@@ -35,7 +35,6 @@ Nằm trong `.claude/skills/`, dùng chung cho cả Claude Code và Antigravity:
 
 ### 4. Giáo trình tự học tích hợp sẵn (`output/learn/`)
 Workspace đi kèm giáo trình học tập dạng web app tĩnh (HTML + CSS + Interactive Quiz) được xây dựng bởi engine `/teach`:
-- **`llm-foundation`:** Cơ chế hàm stateless trên token, nguyên nhân hallucination, tool-use loop, prompt caching TTL trượt, RAG vs Fine-tune, benchmark & eval.
 - **`modern-software-developer`:** Kiến trúc bên trong coding agent, giải phẫu system prompt, RePPIT & spec-driven, giao thức Model Context Protocol (MCP), thiết kế tool, guardrail hooks, subagents & multi-agent patterns, agent-ready audit.
 
 ---
