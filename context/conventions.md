@@ -1,6 +1,6 @@
 # Quy ước làm việc
 
-> Các quy tắc Claude luôn tuân theo khi làm việc với tôi. Sửa/bổ sung tùy nhu cầu.
+> Các quy tắc AI luôn tuân theo khi làm việc với tôi. Sửa/bổ sung tùy nhu cầu.
 
 ## Viết lách
 
